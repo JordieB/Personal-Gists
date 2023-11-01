@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-Creates desktop shortcuts for "Device Manager" and "Add or Remove Programs" 
-within a folder named "Index Shortcuts".
+Creates desktop shortcuts for "Device Manager", "Add or Remove Programs", and 
+"Edit the system environment variables" within a folder named "Index Shortcuts".
 
 .NOTES
 File Name      : create_desktop_index_shortcuts.ps1
@@ -84,4 +84,22 @@ if (-not (Test-Path $addOrRemoveProgramsShortcutPath)) {
     $shortcut.Save()
 } else {
     Log "Add or Remove Programs shortcut already exists"
+}
+
+# Create a shortcut for "Edit the system environment variables" if it doesn't exist
+$editEnvVarsPath = "$env:SystemRoot\System32\rundll32.exe"
+$editEnvVarsShortcutPath = Join-Path $shortcutFolderPath "Edit Environment Variables.lnk"
+$editEnvVarsArgs = "sysdm.cpl,EditEnvironmentVariables"
+
+if (-not (Test-Path $editEnvVarsShortcutPath)) {
+    Log "Creating Edit Environment Variables shortcut"
+    CreateShortcut -targetPath $editEnvVarsPath -shortcutPath $editEnvVarsShortcutPath -name "Edit Environment Variables" -description "Shortcut for Edit Environment Variables"
+    
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $shortcut = $WScriptShell.CreateShortcut($editEnvVarsShortcutPath)
+    $shortcut.Arguments = $editEnvVarsArgs
+    $shortcut.IconLocation = "$env:SystemRoot\System32\SystemPropertiesAdvanced.exe,0"
+    $shortcut.Save()
+} else {
+    Log "Edit Environment Variables shortcut already exists"
 }
