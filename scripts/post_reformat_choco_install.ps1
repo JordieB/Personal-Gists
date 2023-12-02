@@ -51,11 +51,48 @@ choco upgrade chocolatey -y | Out-File $chocoLogPath -Append
 
 # Define a list of software to install
 $softwareToInstall = @(
-    "powershell-core", "discord", "obsidian", "spotify", "bitwarden", "protonvpn",
-    "steam", "python", "pyenv-win", "vscode", "ccleaner", "calibre", "hwmonitor",
-    "libreoffice-fresh", "geforce-experience", "audacity", "git", "powertoys", "qbittorrent",
-    "joytokey", "malwarebytes", "visualstudio2019-workload-vctools", "cuda", "f.lux",
-    "vcredist-all", "zoom"
+    # Personal
+    "discord",
+    "obsidian",
+    "spotify",
+    "steam",
+    # Dev
+    "powershell-core",
+    "python",
+    "pyenv-win",
+    "vscode",
+    "docker-desktop",
+    "nodejs",
+    # Dev Project Dependencies
+    "visualstudio2019-workload-vctools",
+    "cuda", 
+    "ffmpeg-full",
+    # Utilities
+    "bitwarden",
+    "protonvpn",
+    "ccleaner",
+    "calibre",
+    "hwinfo",
+    "libreoffice-fresh",
+    "geforce-experience",
+    "audacity",
+    "git",
+    "powertoys",
+    "qbittorrent",
+    "malwarebytes",
+    "f.lux",
+    "zoom",
+    "gimp",
+    "irfanview",
+    "vlc",
+    "wireshark",
+    # Program Dependencies
+    "vcredist-all",
+    "directx",
+    "dotnet",
+    "dotnet-desktopruntime",
+    "dotnetfx",
+    "openjdk"
 )
 
 # Install listed software and handle reboots
