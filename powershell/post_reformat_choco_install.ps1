@@ -133,4 +133,16 @@ if ($existingTask) {
         -User "NT AUTHORITY\SYSTEM" -RunLevel Highest
 }
 
+# Delete the 'Resume-ChocoInstall' scheduled task if it exists
+$taskName = "Resume-ChocoInstall"
+$existingTask = Get-ScheduledTask -TaskName $taskName `
+    -ErrorAction SilentlyContinue
+if ($existingTask) {
+    Write-Host "Deleting scheduled task '$taskName'..."
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    Write-Host "Scheduled task '$taskName' deleted."
+} else {
+    Write-Host "Scheduled task '$taskName' does not exist. No action taken."
+}
+
 Write-Host "Script completed."
