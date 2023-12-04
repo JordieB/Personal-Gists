@@ -30,6 +30,8 @@ function Install-ChocoPackage {
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\'`
         + 'Component Based Servicing\RebootPending')
 
+    # If a reboot is required, creates a Scheduled Task that will resume
+    # this install script once reboot is finished
     if ($rebootRequired) {
         Write-Host "Reboot required. Scheduling task to continue "`
             + "installation after reboot..."
@@ -50,9 +52,12 @@ function Install-ChocoPackage {
 # Install Chocolatey if not already installed
 if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     Write-Host "Installing Chocolatey..."
+    # Temporarily bypasses the execution policy to allow script execution and 
+    # ensures compatibility with TLS 1.2 for secure web requests
     Set-ExecutionPolicy Bypass -Scope Process -Force
     [System.Net.ServicePointManager]::SecurityProtocol = `
         [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    # Installs chocolately using their install script
     iex ((New-Object System.Net.WebClient).DownloadString(`
         'https://chocolatey.org/install.ps1'))
 }
