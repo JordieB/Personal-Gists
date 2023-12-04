@@ -60,10 +60,42 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
 Write-Host "Upgrading Chocolatey to the latest version..."
 choco upgrade chocolatey -y | Out-File $chocoLogPath -Append
 
-# Define a list of software to install
 $softwareToInstall = @(
-    # [Rest of the software list...]
-
+    # Personal
+    "discord",
+    "obsidian",
+    "spotify",
+    "steam",
+    # Dev
+    "powershell-core",
+    "python",
+    "pyenv-win",
+    "vscode",
+    "docker-desktop",
+    "nodejs",
+    # Dev Project Dependencies
+    "visualstudio2019-workload-vctools",
+    "cuda", 
+    "ffmpeg-full",
+    # Utilities
+    "bitwarden",
+    "protonvpn",
+    "ccleaner",
+    "calibre",
+    "hwinfo",
+    "libreoffice-fresh",
+    "geforce-experience",
+    "audacity",
+    "git",
+    "powertoys",
+    "qbittorrent",
+    "malwarebytes",
+    "f.lux",
+    "zoom",
+    "gimp",
+    "irfanview",
+    "vlc",
+    "wireshark",
     # Program Dependencies
     "vcredist-all",
     "directx",
