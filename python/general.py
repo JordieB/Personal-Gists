@@ -13,6 +13,11 @@ def find_project_root(current_path: Path, marker: str = '.git') -> Path:
 
     Returns:
         Path: The root directory of the project.
+
+    Example usage:
+        current_fp = Path(__file__)
+        root_dir = find_project_root(current_fp)
+        print(f"Project Root: {root_dir}")
     """
     for parent in current_path.parents:
         if (parent / marker).exists():
