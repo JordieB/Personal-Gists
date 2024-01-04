@@ -33,8 +33,9 @@ def find_project_root(current_path: Path = None, marker: str = '.git') -> Path:
     if current_path is None:
         current_path = get_current_path()
     
-    for parent in current_path.parents:
-        if (parent / marker).exists():
-            return parent
+    # Search current directory and then parents
+    for path in [current_path] + list(current_path.parents):
+        if (path / marker).exists():
+            return path
     raise FileNotFoundError((f"Unable to find the root directory. No "
                              f"'{marker}' found."))
