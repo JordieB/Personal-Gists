@@ -1,3 +1,6 @@
+# TODO: how to identify good candidates for spare dtypes?
+# TODO: how to handle/avoid casting strings to high cardinality categorical?
+
 from pandas import DataFrame, to_numeric
 
 def naive_dtype_optimize(df: DataFrame) -> DataFrame:
