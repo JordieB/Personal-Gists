@@ -1,3 +1,4 @@
+# TODO: allow use of handling pd.Series?
 # TODO: how to identify good candidates for spare dtypes?
 # TODO: how to handle/avoid casting strings to high cardinality categorical?
 
