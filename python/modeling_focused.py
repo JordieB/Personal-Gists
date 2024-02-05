@@ -1,34 +1,56 @@
-# TODO: allow use of handling pd.Series?
 # TODO: how to identify good candidates for spare dtypes?
 # TODO: how to handle/avoid casting strings to high cardinality categorical?
 
-from pandas import DataFrame, to_numeric
+from typing import Union
 
-def naive_dtype_optimize(df: DataFrame) -> DataFrame:
+from pandas import DataFrame, Series, to_numeric
+from numpy import ndarray
+
+def convert_and_optimize_to_numerics(
+        df: Union[ndarray, Series, DataFrame]) -> DataFrame:
     """
-    Downcasts the numerical columns of a DataFrame to float types and converts
-    string columns to categorical types for memory efficiency.
+    Converts data to optimized numeric dtypes for memory efficiency and ease of use
+    for statistical learning models.
+        * Numeric cols are downcasted to int unless precision loss then float
+        * Strings are converted to categorical codes
+        * Boolean cols are converted to binary
 
     Args:
-        df (DataFrame): The pandas DataFrame to be downcast.
+        df [np.ndarray, pd.Series, pd.DataFrame]:
+            The data to be converted into optimized numeric dtypes.
 
     Returns:
-        DataFrame: A new DataFrame with downcasted numeric and categorical
-            columns.
+        DataFrame: A new DataFrame with optimized numeric dtypes.
 
     Example:
-        df_downcasted = naive_downcast(original_df)
+        df = convert_and_optimize_to_numerics(df)
     """
+    # Ensure np.ndarray or pd.Series are made into pd.Dataframe
+    if isinstance(df, ndarray):
+        df = DataFrame(df)
+    elif isinstance(df, Series):
+        df = df.to_frame()
+    
     # Creating a copy of the DataFrame to avoid modifying the original one
     new_df = df.copy(deep=True)
 
     # General first pass to guess nullable dtypes
     new_df = new_df.convert_dtypes()
+
     # Grab column names by base dtype
-    numeric_cols = new_df.select_dtypes(include='number').columns
     string_cols = new_df.select_dtypes(include='string').columns
+    boolean_cols = new_df.select_dtypes(include='boolean').columns
+
+    # Convert boolean columns to binary
+    for col in boolean_cols:
+        new_df[col] = new_df[col].astype(int)
+
+    # Convert string columns to categorical codes
+    for col in string_cols:
+        new_df[col] = new_df[col].astype('category').cat.codes
 
     # Downcast numeric columns
+    numeric_cols = new_df.select_dtypes(include='number').columns
     def to_numeric_downcast(series):
         # First, try to convert the series to integers
         try:
@@ -47,7 +69,7 @@ def naive_dtype_optimize(df: DataFrame) -> DataFrame:
     
     new_df[numeric_cols] = new_df[numeric_cols].apply(to_numeric_downcast)
 
-    # Convert string columns to categorical
-    new_df[string_cols] = new_df[string_cols].astype('category')
+    # Pass through guessing method to ensure use of new, nullably pd dtypes
+    new_df = new_df.convert_dtypes()
 
     return new_df
