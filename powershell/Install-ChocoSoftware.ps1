@@ -89,9 +89,11 @@ function Install-ChocoSoftware {
     $softwareToInstall = @(
         # Personal
         "discord",
-        "obsidian",
+        # "obsidian",
+        "notion",
         "spotify",
         "steam",
+        "Firefox",
         # Dev
         "powershell-core",
         "python",
@@ -99,10 +101,17 @@ function Install-ChocoSoftware {
         "vscode",
         "docker-desktop",
         "nodejs",
+        "bfg-repo-cleaner",
+        "chromium",
+        "quatro",
+        "steamcmd",
         # Dev Project Dependencies
         "visualstudio2019-workload-vctools",
         "cuda", 
         "ffmpeg-full",
+        "adb",
+        "openal",
+        "tesseract",
         # Utilities
         "bitwarden",
         "protonvpn",
@@ -120,15 +129,23 @@ function Install-ChocoSoftware {
         "zoom",
         "gimp",
         "irfanview",
+        "jpegview",
         "vlc",
         "wireshark",
+        "jdownloader",
+        "scrcpy",
+        "speccy",
+        "sunshine",
+        "vortex",
+        "wiztree",
         # Program Dependencies
         "vcredist-all",
         "directx",
         "dotnet",
         "dotnet-desktopruntime",
         "dotnetfx",
-        "openjdk"
+        "openjdk",
+        "xna"
     )
 
     Install-Chocolatey
