@@ -12,7 +12,7 @@
 #>
 
 # Define the directory containing personal gists
-$ScriptDirectory = "C:\Users\jordi\projects\personal_gists\powershell"
+$ScriptDirectory = "C:\Users\jordi\projects\_personal_gists\powershell"
 
 # Dot-source personal gists
 . "$ScriptDirectory\Create-PythonVirtualEnv.ps1"
@@ -30,3 +30,13 @@ $ChocolateyProfile = "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
 if (Test-Path($ChocolateyProfile)) {
   Import-Module "$ChocolateyProfile"
 }
+
+# Init jabba
+if (Test-Path "$HOME\.jabba\jabba.ps1") { . "$HOME\.jabba\jabba.ps1" }
+
+# Set the environment variable for Python post-processing with Black
+$env:PYTHON_POST_PROCESS_FILE = "black"
+
+# Set pipx to use whatever pyenv is set to
+$PIPX_DEFAULT_PYTHON = $(pyenv which python)
+[System.Environment]::SetEnvironmentVariable('PIPX_DEFAULT_PYTHON', $PIPX_DEFAULT_PYTHON, [System.EnvironmentVariableTarget]::User)
