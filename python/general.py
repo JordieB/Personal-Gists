@@ -295,3 +295,29 @@ def display_entire_pd_obj_with_float_format():
     with pd.option_context('display.float_format', lambda x: ('%.17f' % x).rstrip('0').rstrip('.')):
         # Display the description of the float_col
         print(df['float_col'].describe().to_frame())
+
+def density_histo_with_rug_plot():
+    """
+    This type of plot can help you quickly identify where the outliers are
+    in a long tail histo via rug plot
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import numpy as np
+
+    # Create random data with a long tail
+    np.random.seed(42)
+    data = np.concatenate([np.random.normal(loc=50, scale=10, size=1000), np.random.normal(loc=150, scale=20, size=200)])
+
+    # Create a histogram with density and a rug plot
+    plt.figure(figsize=(12, 6))
+    sns.histplot(data, bins=30, stat='density', kde=True, color='skyblue', edgecolor='black')
+    sns.rugplot(data, height=0.05, color='red')
+
+    # Add titles and labels
+    plt.title('Histogram with Density and Rug Plot')
+    plt.xlabel('Value')
+    plt.ylabel('Density')
+
+    # Show the plot
+    plt.show()
