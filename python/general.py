@@ -280,3 +280,18 @@ def update_path(new_path):
     # Add new path to sys.path if not already present
     if new_path not in sys_path:
         sys_path.append(new_path)
+
+def display_entire_pd_obj_with_float_format():
+    import pandas as pd
+    import numpy as np
+
+    # Create dataframe with random data for example
+    np.random.seed(0)
+    df = pd.DataFrame({
+        'float_col': np.random.rand(10) * 100  # Random float values
+    })
+
+    # Set display options for float format
+    with pd.option_context('display.float_format', lambda x: ('%.17f' % x).rstrip('0').rstrip('.')):
+        # Display the description of the float_col
+        print(df['float_col'].describe().to_frame())
