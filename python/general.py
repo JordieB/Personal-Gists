@@ -372,3 +372,109 @@ def using_subplot_mosiacs():
     fig.suptitle("Distribution of Values by Category", fontsize=16)
 
     plt.show()
+
+def demonstrate_notebook_interactions():
+    def access_variables_between_notebooks():
+        """
+        Accessing variables from another running notebook's kernel.
+        """
+        from IPython import get_ipython
+        
+        # This assumes that the other notebook (Notebook B) has a running 
+        # kernel with the variable already accessible.
+        
+        # In Notebook B:
+        get_ipython().magic('store var_name')
+
+        # In Notebook A:
+        get_ipython().magic('store -r var_name')
+
+        # Alternative: Selecting the running kernel of Notebook B to use in 
+        # Notebook A
+        # You can switch kernels in Jupyter Lab or Jupyter Notebook interface.
+
+    def run_notebook_b_inside_a():
+        """
+        Running Notebook B inside Notebook A to access its objects and show outputs.
+        """
+        from IPython import get_ipython
+
+        # Example script in Notebook B (notebook_b.ipynb)
+        def greet(name):
+            """A simple function that greets a person."""
+            print(f"Hello, {name}!")
+
+        def main():
+            """Main function to execute the greet function."""
+            import sys
+            if len(sys.argv) > 1:
+                name = sys.argv[1]
+            else:
+                name = "World"
+            greet(name)
+
+        if __name__ == "__main__":
+            main()
+
+        # In Notebook A (current notebook):
+        # Basic Execution: To run the script as if it were standalone
+        get_ipython().magic('run file_b.py')
+
+        # Command-Line Arguments: You can pass arguments to the script as you 
+        # would in the command line (for sys.argv):
+        get_ipython().magic('run file_b.py YourName')
+
+        # Interactive Namespace: To run the script in IPython's interactive 
+        # namespace
+        get_ipython().magic('run -i file_b.py')
+
+        # Ignore sys.exit(): To ignore sys.exit() calls
+        get_ipython().magic('run -e file_b.py')
+
+        # Timing Information: To get timing information for the script
+        get_ipython().magic('run -t file_b.py')
+
+        # Debugging with pdb: To debug the script using `pdb`
+        get_ipython().magic('run -d file_b.py')
+
+        # Running as a Module: To run a Python module
+        get_ipython().magic('run -m mymodule')
+
+    def execute_notebook_content():
+        """
+        Getting another notebook’s contents, cutting out cells that you don’t 
+        want to run, turning resulting contents into Python code, and 
+        executing them in your notebook.
+        """
+        from pathlib import Path
+        from nbformat import read as nbf_read
+        from nbconvert.preprocessors import ExecutePreprocessor
+        from nbconvert import PythonExporter
+        
+        notebook_fp = Path('path/to/notebook_b.ipynb')
+        stop_at_cell_index = 7
+
+        # Read notebook contents into a variable
+        with open(notebook_fp, 'r') as f:
+            nb_content = nbf_read(f, as_version=4)
+
+        # Extract the kernel name from the notebook to use it later to run it
+        kernel_name = nb_content.metadata.kernelspec.name
+
+        # Optionally, slice notebook contents to stop it at a specific cell
+        if stop_at_cell_index:
+            nb_content.cells = nb_content.cells[:stop_at_cell_index]
+
+        # Prepare the notebook
+        ep = ExecutePreprocessor(timeout=600, kernel_name=kernel_name)
+        ep.preprocess(nb_content, {'metadata': {'path': notebook_fp.parent}})
+
+        # Convert notebook to Python script
+        exporter = PythonExporter()
+        py_content, _ = exporter.from_notebook_node(nb_content)
+
+        # Run content of notebook as Python to surface resulting variables in namespace
+        exec(py_content)
+
+        # Verify the variable from the other notebook is in current namespace
+        print(new_var_from_outside_nb)
