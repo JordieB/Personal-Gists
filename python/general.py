@@ -321,3 +321,54 @@ def density_histo_with_rug_plot():
 
     # Show the plot
     plt.show()
+
+def using_subplot_mosiacs():
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    # Step 1: Generate data
+    np.random.seed(42)  # For reproducibility
+
+    # Create a new dataframe with 1000 rows
+    n_rows = 1000
+    df = pd.DataFrame({
+        'id': np.arange(1, n_rows + 1),
+        'category': np.random.choice(['Category_A', 'Category_B', 'Category_C'], size=n_rows),
+        'value': np.random.uniform(0, 100, size=n_rows)
+    })
+
+    # Step 2: Create fig_design to define the subplot mosaic
+    fig_design = [['Category_A'], ['Category_B'], ['Category_C']]
+
+    # Step 3 & 4: Create a plt figure with constrained layout and subplot mosaic
+    fig, ax_dict = plt.subplot_mosaic(fig_design, constrained_layout=True, figsize=(8, 12))
+
+    # Step 5: Iterate over unique values of category
+    for category in df['category'].unique():
+        # Filter df by the matching category value
+        filtered_data = df[df['category'] == category]
+
+        # Remove outliers using IQR
+        Q1, Q3 = filtered_data['value'].quantile([0.25, 0.75])
+        IQR = Q3 - Q1
+        non_outlier_data = filtered_data[
+            (filtered_data['value'] >= Q1 - 1.5 * IQR) &
+            (filtered_data['value'] <= Q3 + 1.5 * IQR)
+        ]
+
+        # Plot using seaborn histplot
+        sns.histplot(non_outlier_data['value'], bins=20, ax=ax_dict[category])
+
+        # Set title and labels
+        ax_dict[category].set_title(f"Histogram for {category}", color='#e5b567')
+        ax_dict[category].set_xlabel("Value")
+
+        # Format x-axis values as integers
+        ax_dict[category].xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x)}"))
+
+    # Step 6: Set a supertitle for the figure
+    fig.suptitle("Distribution of Values by Category", fontsize=16)
+
+    plt.show()
