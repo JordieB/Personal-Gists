@@ -1,12 +1,17 @@
-from os import stat
-from json import load, dump, JSONDecodeError
+from sys import path as sys_path
+from os import stat, environ
 from pathlib import Path as PlPath
 from re import sub
 from typing import Optional
 from subprocess import run, check_output
 from os import stat
-from json import load, dump, JSONDecodeError
-from pathlib import Path as PlPath
+from json import (
+    load as json_load,
+    dump as json_dump,
+    JSONDecodeError
+)
+
+from dotenv import load_dotenv
 
 
 def get_current_path() -> PlPath:
@@ -174,7 +179,7 @@ init_py:
     if vscode_settings_path.exists() and stat(vscode_settings_path).st_size > 0:
         with vscode_settings_path.open("r+") as settings_file:
             try:
-                settings = load(settings_file)
+                settings = json_load(settings_file)
             except JSONDecodeError:
                 settings = {}
     else:
@@ -183,7 +188,7 @@ init_py:
     settings["python.envFile"] = "${workspaceFolder}/.env"
 
     with vscode_settings_path.open("w") as settings_file:
-        dump(settings, settings_file, indent=4)
+        json_dump(settings, settings_file, indent=4)
 
     # Ensure __init__.py exists with the specified import statement
     init_file_path.write_text("from src import config  # noqa: F401\n")
@@ -203,3 +208,75 @@ init_py:
             )
         else:
             run(["poetry", "config", "--unset", "virtualenvs.in-project"])
+
+def update_path(new_path):
+    """
+    Updates the VS Code workspace settings.json to include a new path in 
+    'python.analysis.extraPaths' and appends the new path to sys.path.
+
+    This function ensures that the provided `new_path` is added to the 
+    'python.analysis.extraPaths' list in the VS Code settings.json file, 
+    which is located in the .vscode directory at the project root. 
+    Additionally, it adds the `new_path` to the Python sys.path if it 
+    isn't already present.
+
+    Args:
+        new_path (str): The new path to be added to the VS Code settings 
+        and sys.path.
+
+    Raises:
+        EnvironmentError: If the PROJ_ROOT environment variable is not set.
+        JSONDecodeError: If the settings.json file contains invalid JSON.
+
+    Example:
+        To add a path to the VS Code settings and sys.path, you can use the
+        function as follows:
+
+        ```python
+        from os import environ
+
+        # Ensure PROJ_ROOT environment variable is set
+        environ['PROJ_ROOT'] = '/path/to/project/root'
+
+        # Call the function with the new path
+        new_path = '/path/to/add'
+        update_path(new_path)
+        ```
+    """
+
+    # Load environment variables
+    load_dotenv()
+
+    # Retrieve project root from environment variable
+    proj_root = environ.get('PROJ_ROOT')
+    if not proj_root:
+        raise EnvironmentError("PROJ_ROOT environment variable is not set.")
+
+    proj_root = PlPath(proj_root)
+    settings_fp = proj_root / '.vscode' / 'settings.json'
+
+    # Ensure .vscode directory and settings.json file exist
+    settings_fp.parent.mkdir(parents=True, exist_ok=True)
+    if not settings_fp.exists():
+        settings_fp.write_text('{}')
+
+    # Load current settings from settings.json
+    try:
+        with settings_fp.open('r', encoding='utf-8') as file:
+            settings = json_load(file)
+    except JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in settings.json: {e.msg}")
+
+    # Update extraPaths in settings
+    extra_paths = settings.get('python.analysis.extraPaths', [])
+    if new_path not in extra_paths:
+        extra_paths.append(new_path)
+        settings['python.analysis.extraPaths'] = extra_paths
+
+        # Write updated settings back to settings.json
+        with settings_fp.open('w', encoding='utf-8') as file:
+            json_dump(settings, file, ensure_ascii=False, indent=4)
+
+    # Add new path to sys.path if not already present
+    if new_path not in sys_path:
+        sys_path.append(new_path)
