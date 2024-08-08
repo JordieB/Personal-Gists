@@ -62,23 +62,6 @@ def find_project_root(current_path: Optional[PlPath] = None,
         f"Unable to find the root directory. No '{marker}' found."
     )
 
-def camel_to_snake(name: str) -> str:
-    """
-    Convert a camel case string to snake case.
-
-    Args:
-        name (str): The camel case string.
-
-    Returns:
-        str: The snake case converted string.
-
-    Example:
-        snake_name = camel_to_snake("CamelCaseString")
-        print(snake_name)  # Output: camel_case_string
-    """
-    s1 = sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
-
 def ensure_makefile_and_env() -> None:
     """
     Ensures a Makefile with specific commands and a .env file with defined 
