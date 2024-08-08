@@ -1,8 +1,12 @@
 from typing import List
 from json import dumps
+from zipfile import ZipFile
+from pathlib import Path
+from warnings import warn
 
 from pandas import DataFrame, read_csv
 from requests.compat import urlencode
+from kaggle.api.kaggle_api_extended import KaggleApi
 
 
 def checkpoint_df(df: DataFrame, cols_to_serialize: List[str],
@@ -94,3 +98,75 @@ def load_google_sheet_as_df(
 
     # Load the sheet into a Pandas DataFrame
     return read_csv(url)
+
+
+def download_and_prepare_kaggle_data(competition_name: str = None,
+                                     raw_data_dir: Path = None) -> None:
+    """
+    Downloads competition data from Kaggle, moves it to the specified data
+    directory, and unzips the data.
+
+    This function performs the following steps:
+    1. Downloads the dataset from the Kaggle competition.
+    2. Moves the downloaded zip file to the raw_data_dir.
+    3. Unzips the contents of the zip file into the raw_data_dir.
+
+    Args:
+        competition_name (str): The name of the Kaggle competition. If None,
+            it uses the value from config.
+        raw_data_dir (Path): The directory to save and unzip the data. If 
+            None, it uses the value from config.
+
+    Example:
+        download_and_prepare_kaggle_data()
+
+    This will:
+    - Download the dataset from the specified Kaggle competition.
+    - Move the downloaded zip file to the specified raw data directory.
+    - Unzip the contents of the zip file into the specified raw data directory.
+    """
+    try:
+        if competition_name is None or raw_data_dir is None:
+            from config import (
+                RAW_DATA_DIR as config_raw_data_dir,
+                COMPETITION_NAME as config_competition_name
+            )
+            if competition_name is None:
+                competition_name = config_competition_name
+            if raw_data_dir is None:
+                raw_data_dir = config_raw_data_dir
+    except ImportError:
+        warn(("Failed to import from config. Please provide "
+                       "competition_name and raw_data_dir."))
+        if competition_name is None or raw_data_dir is None:
+            raise ValueError(("Both competition_name and raw_data_dir must be "
+                              "provided if config import fails."))
+
+    # Ensure raw_data_dir is a Path object
+    raw_data_dir = Path(raw_data_dir)
+
+    # Paths
+    download_zip: str = f"{competition_name}.zip"
+    destination_zip: Path = raw_data_dir / download_zip
+    destination_dir: Path = raw_data_dir
+
+    # Ensure the destination directory exists
+    raw_data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize Kaggle API
+    api = KaggleApi()
+    api.authenticate()
+
+    # Download the dataset from Kaggle
+    api.competition_download_file(
+        competition_name,
+        file_name=download_zip,
+        path="."
+    )
+
+    # Move the downloaded file
+    Path(download_zip).rename(destination_zip)
+
+    # Unzip the file
+    with ZipFile(destination_zip, "r") as zip_ref:
+        zip_ref.extractall(destination_dir)
