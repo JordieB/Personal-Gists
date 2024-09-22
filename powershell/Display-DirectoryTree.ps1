@@ -19,15 +19,7 @@
     An array of directory names to exclude from the tree display.
 
 .EXAMPLE
-    Get-Tree -rootPath "C:\" -maxDepth 3
-    Displays the directory tree of the C: drive up to 3 levels deep, without files.
-
-.EXAMPLE
-    Get-Tree -rootPath "C:\" -maxDepth 3 -IncludeFiles $true
-    Displays the directory tree of the C: drive up to 3 levels deep, including files.
-
-.EXAMPLE
-    Get-Tree -rootPath "C:\" -maxDepth 3 -ExcludeDirs @('.mypy_cache', '.venv', '.git')
+    Get-Tree -rootPath "." -maxDepth 3 -IncludeFiles $true -ExcludeDirs @('.mypy_cache', '.venv', '.git', '.mypy_cache')
     Displays the directory tree of the C: drive up to 3 levels deep, excluding directories named '.mypy_cache' and '.venv'.
 
 .NOTES
