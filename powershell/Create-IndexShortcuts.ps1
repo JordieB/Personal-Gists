@@ -4,7 +4,8 @@ Creates desktop shortcuts for essential Windows utilities within a folder named 
 
 .DESCRIPTION
 This script enhances ease of access to frequently used tools like "Device Manager", "Add or Remove Programs",
-"Edit the system environment variables", "Calculator", "Default Apps", and "Game Controllers" using Windows' PowerToys Search.
+"Edit the system environment variables", "Calculator", "Default Apps", "Game Controllers" and now "Bluetooth Settings"
+using Windows' PowerToys Search.
 
 .NOTES
 Author         : Jordie Belle
@@ -62,10 +63,15 @@ function New-Shortcut {
         $shortcut = $WScriptShell.CreateShortcut($ShortcutPath)
         $shortcut.TargetPath = $TargetPath
         $shortcut.Description = $Description
-        $shortcut.WorkingDirectory = if ($TargetPath -eq "explorer.exe") { "$env:SystemRoot\System32" } else { (Get-Item $TargetPath).DirectoryName }
+        $shortcut.WorkingDirectory = if ($TargetPath -eq "explorer.exe") {
+            "$env:SystemRoot\System32"
+        } else {
+            (Get-Item $TargetPath).DirectoryName
+        }
 
-        if ($Arguments) { $shortcut.Arguments = $Arguments }
-        if ($IconLocation) { $shortcut.IconLocation = $IconLocation } else { $shortcut.IconLocation = $TargetPath }
+        if ($Arguments)   { $shortcut.Arguments   = $Arguments }
+        if ($IconLocation){ $shortcut.IconLocation = $IconLocation }
+        else              { $shortcut.IconLocation = $TargetPath }
 
         $shortcut.Save()
         Write-Log "Created shortcut for $Name."
@@ -85,43 +91,50 @@ function Create-IndexShortcuts {
     # Shortcut creation details
     $shortcuts = @(
         @{
-            Name = "Add or Remove Programs"
-            Path = "explorer.exe"
+            Name        = "Add or Remove Programs"
+            Path        = "explorer.exe"
             Description = "Shortcut for Add or Remove Programs"
-            Args = "ms-settings:appsfeatures"
-            Icon = "$env:SystemRoot\System32\SystemSettingsAdminFlows.exe,0"
+            Args        = "ms-settings:appsfeatures"
+            Icon        = "$env:SystemRoot\System32\SystemSettingsAdminFlows.exe,0"
         },
         @{
-            Name = "Edit Environment Variables"
-            Path = "$env:SystemRoot\System32\rundll32.exe"
+            Name        = "Edit Environment Variables"
+            Path        = "$env:SystemRoot\System32\rundll32.exe"
             Description = "Shortcut for Edit Environment Variables"
-            Args = "sysdm.cpl,EditEnvironmentVariables"
-            Icon = "$env:SystemRoot\System32\SystemPropertiesAdvanced.exe,0"
+            Args        = "sysdm.cpl,EditEnvironmentVariables"
+            Icon        = "$env:SystemRoot\System32\SystemPropertiesAdvanced.exe,0"
         },
         @{
-            Name = "Calculator"
-            Path = "$env:SystemRoot\System32\calc.exe"
+            Name        = "Calculator"
+            Path        = "$env:SystemRoot\System32\calc.exe"
             Description = "Shortcut for Calculator"
         },
         @{
-            Name = "Default Apps"
-            Path = "explorer.exe"
+            Name        = "Default Apps"
+            Path        = "explorer.exe"
             Description = "Shortcut for Default Apps"
-            Args = "ms-settings:defaultapps"
-            Icon = "$env:SystemRoot\System32\SystemSettingsAdminFlows.exe,0"
+            Args        = "ms-settings:defaultapps"
+            Icon        = "$env:SystemRoot\System32\SystemSettingsAdminFlows.exe,0"
         },
         @{
-            Name = "Game Controllers"
-            Path = "$env:SystemRoot\System32\control.exe"
+            Name        = "Game Controllers"
+            Path        = "$env:SystemRoot\System32\control.exe"
             Description = "Shortcut for Game Controllers"
-            Args = "joy.cpl"
-            Icon = "$env:SystemRoot\System32\control.exe,0"
+            Args        = "joy.cpl"
+            Icon        = "$env:SystemRoot\System32\control.exe,0"
         },
         @{
-            Name = "Device Manager"
-            Path = "$env:SystemRoot\System32\devmgmt.msc"
+            Name        = "Device Manager"
+            Path        = "$env:SystemRoot\System32\devmgmt.msc"
             Description = "Shortcut for Device Manager"
-            Icon = "$env:SystemRoot\System32\devmgmt.msc,0"
+            Icon        = "$env:SystemRoot\System32\devmgmt.msc,0"
+        },
+        @{
+            Name        = "Bluetooth Settings"
+            Path        = "explorer.exe"
+            Description = "Shortcut for Bluetooth Settings"
+            Args        = "ms-settings:bluetooth"
+            Icon        = "$env:SystemRoot\System32\SystemSettingsAdminFlows.exe,0"
         }
     )
 
@@ -130,8 +143,15 @@ function Create-IndexShortcuts {
         $shortcutPath = Join-Path $ShortcutFolderPath "$($shortcut.Name).lnk"
 
         if (-not (Test-Path $shortcutPath)) {
-            New-Shortcut -TargetPath $shortcut.Path -ShortcutPath $shortcutPath -Name $shortcut.Name -Description $shortcut.Description -Arguments $shortcut.Args -IconLocation $shortcut.Icon
-        } else {
+            New-Shortcut `
+                -TargetPath   $shortcut.Path `
+                -ShortcutPath $shortcutPath `
+                -Name         $shortcut.Name `
+                -Description  $shortcut.Description `
+                -Arguments    $shortcut.Args `
+                -IconLocation $shortcut.Icon
+        }
+        else {
             Write-Log "$($shortcut.Name) shortcut already exists"
         }
     }
@@ -142,5 +162,5 @@ function Main {
     Create-IndexShortcuts
 }
 
-# Execute main function
+# Execute main
 Main
