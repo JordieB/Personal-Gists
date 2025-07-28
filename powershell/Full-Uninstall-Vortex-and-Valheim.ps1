@@ -1,186 +1,461 @@
-# Function to check if the script is running as admin
-function Test-IsAdmin {
-    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal($currentUser)
-    $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
-}
+<#
+.SYNOPSIS
+    Completely uninstalls Vortex mod manager and Valheim game including all associated data and files.
 
-# Restart the script with admin privileges if not already running as admin
-if (-not (Test-IsAdmin)) {
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    exit
-}
+.DESCRIPTION
+    This script performs a comprehensive removal of Vortex mod manager and Valheim game from the system.
+    It handles the complete uninstallation process including mod cleanup, data purging, Steam integration,
+    and leftover file removal. The script uses SteamCMD for proper Steam game uninstallation and ensures
+    all traces are removed from the system.
 
-# Enable script logging
-Start-Transcript -Path "$env:TEMP\Full-Uninstall-Vortex-and-Valheim.log" -Append
+.PARAMETER LogPath
+    The path to the log file where uninstallation activities will be recorded. Defaults to a temporary location.
 
-# Function to log messages with timestamps
-function Log-Message {
-    param (
-        [string]$message
-    )
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Host "$timestamp - $message"
-}
+.PARAMETER SkipUserPrompts
+    When specified, skips interactive user prompts and proceeds automatically through the uninstallation process.
 
-# Function to handle errors and keep console open
-function Handle-Error {
-    param (
-        [string]$message
-    )
-    Log-Message "ERROR: $message"
-    Log-Message "Press Enter to exit..."
-    Read-Host
-    Stop-Transcript
-    exit 1
-}
+.PARAMETER SteamUsername
+    The Steam username for authentication. If not provided, the script will prompt for it during execution.
 
-# Function to interact with SteamCMD process
-function Run-SteamCMD {
-    param (
-        [string]$arguments,
-        [string]$steamUser,
-        [string]$steamPass
-    )
+.PARAMETER ForceUninstall
+    When specified, forces the uninstallation even if some components are not found or errors occur.
 
-    $steamCmdPath = "C:\ProgramData\chocolatey\lib\steamcmd\tools\steamcmd.exe"
-    if (-Not (Test-Path $steamCmdPath)) {
-        Handle-Error "SteamCMD executable not found at $steamCmdPath"
-    }
+.EXAMPLE
+    Invoke-VortexValheimUninstall
+    Runs the complete uninstallation process with interactive prompts.
 
-    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $processInfo.FileName = $steamCmdPath
-    $processInfo.Arguments = $arguments
-    $processInfo.RedirectStandardInput = $true
-    $processInfo.RedirectStandardOutput = $true
-    $processInfo.RedirectStandardError = $true
-    $processInfo.UseShellExecute = $false
-    $processInfo.CreateNoWindow = $true
+.EXAMPLE
+    Invoke-VortexValheimUninstall -SkipUserPrompts -LogPath "C:\Logs\uninstall.log"
+    Runs the uninstallation without user prompts and logs to a custom location.
 
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $processInfo
-    $process.Start() | Out-Null
+.EXAMPLE
+    Invoke-VortexValheimUninstall -SteamUsername "myusername" -ForceUninstall
+    Runs with predefined username and forces uninstallation even if errors occur.
 
-    $process.StandardInput.WriteLine("+login $steamUser $steamPass")
-    Start-Sleep -Seconds 2
-
-    $output = $process.StandardOutput.ReadToEnd()
-
-    if ($output -match "Steam Guard code:") {
-        $steamGuardCode = Read-Host -Prompt "Enter Steam Guard code from your email"
-        $process.StandardInput.WriteLine($steamGuardCode)
-    }
-
-    $process.StandardInput.WriteLine("+quit")
-    $process.StandardInput.Close()
-    $process.WaitForExit()
-
-    if ($process.ExitCode -ne 0) {
-        Handle-Error "SteamCMD command failed with exit code $($process.ExitCode)"
-    }
-}
-
-try {
-    # Instructions for the user
-    Log-Message "Please ensure the following before proceeding:"
-    Log-Message "1. Steam must be open and running."
-    Log-Message "2. This script must be started in admin mode."
-    Log-Message "3. You will need to provide your Steam username and password."
-    Log-Message "Note: If the window hangs (no new text appears), press Enter to check the logs."
-
-    # Pause for user to read instructions
-    Log-Message "You're pausing to acknowledge info screen 1 of 2"
-    Log-Message "Press Enter to continue..."
-    Read-Host
-
-    # Notify the user of the steps being taken
-    Log-Message "The script will perform the following steps:"
-    Log-Message "1. Close Vortex if running."
-    Log-Message "2. Remove all mods from Vortex."
-    Log-Message "3. Purge Vortex data."
-    Log-Message "4. Uninstall Vortex."
-    Log-Message "5. Check and install Chocolatey if needed."
-    Log-Message "6. Install SteamCMD using Chocolatey."
-    Log-Message "7. Use SteamCMD to quit and uninstall Valheim."
-    Log-Message "8. Recursively clean up any leftover files."
-
-    # Pause for user to read steps
-    Log-Message "You're pausing to acknowledge info screen 2 of 2"
-    Log-Message "Press Enter to continue..."
-    Read-Host
-
-    # Indicate that the script is officially starting
-    Log-Message "Script is now starting..."
-
-    Log-Message "Step 1: Closing Vortex if running"
-    Stop-Process -Name "vortex" -ErrorAction SilentlyContinue
-
-    Log-Message "Step 2: Removing all mods from Vortex"
-    $vortexDir = "$env:APPDATA\Vortex"
-    $gameDir = "$vortexDir\valheim"
-    Remove-Item -Path "$gameDir\mods" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path "$gameDir\downloads" -Recurse -Force -ErrorAction SilentlyContinue
-
-    Log-Message "Step 3: Purging Vortex data"
-    Remove-Item -Path "$vortexDir\state" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path "$gameDir\state" -Recurse -Force -ErrorAction SilentlyContinue
-
-    Log-Message "Step 4: Uninstalling Vortex"
-    $uninstaller = Get-WmiObject -Class Win32_Product | Where-Object {$_.Name -like "Vortex*"}
-    if ($uninstaller) {
-        $uninstallString = $uninstaller.UninstallString
-        $argsList = $uninstallString.Replace("/I","/X") + " /qn"
-        $process = Start-Process "$env:SYSTEMROOT\system32\msiexec.exe" -ArgumentList $argsList -Wait -PassThru
-        $process.WaitForExit()
-
-        if ($process.ExitCode -ne 0) {
-            Handle-Error "Uninstalling Vortex failed with exit code $($process.ExitCode)"
-        }
-    } else {
-        Log-Message "Vortex is not installed."
-    }
-
-    Log-Message "Step 5: Checking and Installing Chocolatey if needed"
-    if (-Not (Get-Command choco -ErrorAction SilentlyContinue)) {
-        Log-Message "Step 5.1: Installing Chocolatey"
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-        Invoke-WebRequest -Uri "https://chocolatey.org/install.ps1" -UseBasicParsing | Invoke-Expression | Out-Null
-    }
-
-    Log-Message "Step 5.2: Installing SteamCMD using Chocolatey"
-    $process = Start-Process "choco" -ArgumentList "install steamcmd -y" -Wait -PassThru
-    $process.WaitForExit()
-
-    if ($process.ExitCode -ne 0) {
-        Handle-Error "Installing SteamCMD using Chocolatey failed with exit code $($process.ExitCode)"
-    }
-
-    Log-Message "Step 6: Prompting for Steam credentials"
-    $steamUser = Read-Host -Prompt "Enter your Steam username"
-    $steamPass = Read-Host -Prompt "Enter your Steam password" -AsSecureString
-    $steamPassUnsecure = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($steamPass))
-
-    Log-Message "Step 7: Using SteamCMD to quit and uninstall Valheim"
+.NOTES
+    Author: Jordie Belle
+    Prerequisites: PowerShell V5 or higher
+    Requirements:
+    - Administrative privileges are required for software uninstallation
+    - Active Steam installation
+    - Internet connection for downloading SteamCMD if not present
+    - Chocolatey package manager (will be installed if needed)
     
-    Log-Message "Step 7.1: Quitting Valheim (ID 892970)"
-    Run-SteamCMD "+app_stop 892970" $steamUser $steamPassUnsecure
+    Security Notes:
+    - This script requires and will prompt for Steam credentials
+    - Credentials are handled securely using SecureString
+    - All mod data and game saves will be permanently deleted
+    - This action cannot be undone - ensure you have backups if needed
+    
+    Uninstallation Process:
+    1. Validates administrative privileges and restarts if needed
+    2. Closes running Vortex processes
+    3. Removes all Vortex mods and downloads
+    4. Purges Vortex configuration and state data
+    5. Uninstalls Vortex application
+    6. Installs/updates SteamCMD via Chocolatey
+    7. Authenticates with Steam and uninstalls Valheim
+    8. Cleans up any remaining game files and directories
+#>
 
-    Log-Message "Step 7.2: Uninstalling Valheim (ID 892970)"
-    Run-SteamCMD "+app_uninstall 892970" $steamUser $steamPassUnsecure
+function Invoke-VortexValheimUninstall {
+    [CmdletBinding()]
+    param (
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string]$LogPath = "$env:TEMP\VortexValheimUninstall_$(Get-Date -Format 'yyyyMMdd_HHmmss').log",
+        
+        [Parameter()]
+        [switch]$SkipUserPrompts,
+        
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string]$SteamUsername,
+        
+        [Parameter()]
+        [switch]$ForceUninstall
+    )
 
-    Log-Message "Step 8: Recursively cleaning up any leftover files"
-    $valheimDir = "$env:PROGRAMFILES\Steam\steamapps\common\Valheim"
-    if (Test-Path $valheimDir) {
-        Remove-Item -Path "$valheimDir\*" -Recurse -Force
+    # Function to check if the script is running as admin
+    function Test-IsAdmin {
+        [CmdletBinding()]
+        param()
+        
+        $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $currentPrincipal = New-Object Security.Principal.WindowsPrincipal($currentUser)
+        return $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
     }
 
-    Log-Message "Process completed successfully. Press Enter to exit..."
-    Read-Host
+    # Function to log messages with timestamps
+    function Write-UninstallLog {
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Message,
+            
+            [Parameter()]
+            [ValidateSet('Information', 'Warning', 'Error')]
+            [string]$Level = 'Information'
+        )
+        
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $logEntry = "[$timestamp] $Level`: $Message"
+        
+        try {
+            Add-Content -Path $LogPath -Value $logEntry -ErrorAction Stop
+        } catch {
+            Write-Warning "Failed to write to log file: $($_.Exception.Message)"
+        }
+        
+        # Output to console based on level
+        switch ($Level) {
+            'Information' { Write-Information $Message -InformationAction Continue }
+            'Warning' { Write-Warning $Message }
+            'Error' { Write-Error $Message }
+        }
+    }
+
+    # Function to handle critical errors
+    function Stop-UninstallProcess {
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory)]
+            [ValidateNotNullOrEmpty()]
+            [string]$ErrorMessage
+        )
+        
+        Write-UninstallLog "CRITICAL ERROR: $ErrorMessage" -Level Error
+        
+        if (-not $SkipUserPrompts) {
+            Write-Information "Press Enter to exit..." -InformationAction Continue
+            Read-Host
+        }
+        
+        Stop-Transcript -ErrorAction SilentlyContinue
+        
+        if ($ForceUninstall) {
+            Write-Warning "Force uninstall specified - continuing despite error."
+            return $false
+        } else {
+            throw $ErrorMessage
+        }
+    }
+
+    # Function to interact with SteamCMD process
+    function Invoke-SteamCMD {
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Arguments,
+            
+            [Parameter(Mandatory)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Username,
+            
+            [Parameter(Mandatory)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Password
+        )
+
+        $steamCmdPath = "C:\ProgramData\chocolatey\lib\steamcmd\tools\steamcmd.exe"
+        if (-not (Test-Path $steamCmdPath)) {
+            return Stop-UninstallProcess "SteamCMD executable not found at $steamCmdPath"
+        }
+
+        try {
+            $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $processInfo.FileName = $steamCmdPath
+            $processInfo.Arguments = $Arguments
+            $processInfo.RedirectStandardInput = $true
+            $processInfo.RedirectStandardOutput = $true
+            $processInfo.RedirectStandardError = $true
+            $processInfo.UseShellExecute = $false
+            $processInfo.CreateNoWindow = $true
+
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo = $processInfo
+            $process.Start() | Out-Null
+
+            $process.StandardInput.WriteLine("+login $Username $Password")
+            Start-Sleep -Seconds 3
+
+            $output = $process.StandardOutput.ReadToEnd()
+
+            if ($output -match "Steam Guard code:" -and -not $SkipUserPrompts) {
+                $steamGuardCode = Read-Host -Prompt "Enter Steam Guard code from your email"
+                $process.StandardInput.WriteLine($steamGuardCode)
+                Start-Sleep -Seconds 2
+            }
+
+            $process.StandardInput.WriteLine("+quit")
+            $process.StandardInput.Close()
+            $process.WaitForExit()
+
+            if ($process.ExitCode -ne 0) {
+                return Stop-UninstallProcess "SteamCMD command failed with exit code $($process.ExitCode)"
+            }
+            
+            Write-UninstallLog "SteamCMD command completed successfully" -Level Information
+            return $true
+            
+        } catch {
+            return Stop-UninstallProcess "Error executing SteamCMD: $($_.Exception.Message)"
+        }
+    }
+
+    # Function to ensure Chocolatey is available
+    function Install-ChocoIfNeeded {
+        [CmdletBinding()]
+        param()
+        
+        if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+            try {
+                Write-UninstallLog "Installing Chocolatey package manager..." -Level Information
+                Set-ExecutionPolicy Bypass -Scope Process -Force
+                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+                
+                $installScript = Invoke-WebRequest -Uri "https://chocolatey.org/install.ps1" -UseBasicParsing
+                Invoke-Expression $installScript.Content
+                
+                Write-UninstallLog "Chocolatey installed successfully" -Level Information
+                return $true
+            } catch {
+                return Stop-UninstallProcess "Failed to install Chocolatey: $($_.Exception.Message)"
+            }
+        } else {
+            Write-UninstallLog "Chocolatey is already installed" -Level Information
+            return $true
+        }
+    }
+
+    # Function to install SteamCMD
+    function Install-SteamCMD {
+        [CmdletBinding()]
+        param()
+        
+        try {
+            Write-UninstallLog "Installing SteamCMD using Chocolatey..." -Level Information
+            $process = Start-Process "choco" -ArgumentList "install steamcmd -y" -Wait -PassThru -ErrorAction Stop
+            
+            if ($process.ExitCode -eq 0) {
+                Write-UninstallLog "SteamCMD installed successfully" -Level Information
+                return $true
+            } else {
+                return Stop-UninstallProcess "Installing SteamCMD failed with exit code $($process.ExitCode)"
+            }
+        } catch {
+            return Stop-UninstallProcess "Error installing SteamCMD: $($_.Exception.Message)"
+        }
+    }
+
+    # Function to remove Vortex application
+    function Remove-VortexApplication {
+        [CmdletBinding()]
+        param()
+        
+        try {
+            Write-UninstallLog "Closing Vortex if running..." -Level Information
+            Stop-Process -Name "vortex" -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+
+            Write-UninstallLog "Removing Vortex mods and downloads..." -Level Information
+            $vortexDir = "$env:APPDATA\Vortex"
+            $gameDir = "$vortexDir\valheim"
+            
+            Remove-Item -Path "$gameDir\mods" -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path "$gameDir\downloads" -Recurse -Force -ErrorAction SilentlyContinue
+
+            Write-UninstallLog "Purging Vortex configuration data..." -Level Information
+            Remove-Item -Path "$vortexDir\state" -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path "$gameDir\state" -Recurse -Force -ErrorAction SilentlyContinue
+
+            Write-UninstallLog "Uninstalling Vortex application..." -Level Information
+            $uninstaller = Get-CimInstance -ClassName Win32_Product | Where-Object {$_.Name -like "Vortex*"}
+            
+            if ($uninstaller) {
+                $uninstallResult = $uninstaller | Invoke-CimMethod -MethodName Uninstall
+                if ($uninstallResult.ReturnValue -eq 0) {
+                    Write-UninstallLog "Vortex uninstalled successfully" -Level Information
+                } else {
+                    Write-UninstallLog "Vortex uninstall returned code: $($uninstallResult.ReturnValue)" -Level Warning
+                }
+            } else {
+                Write-UninstallLog "Vortex application not found in installed programs" -Level Information
+            }
+            
+            return $true
+        } catch {
+            return Stop-UninstallProcess "Error removing Vortex: $($_.Exception.Message)"
+        }
+    }
+
+    # Function to uninstall Valheim via Steam
+    function Remove-ValheimGame {
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory)]
+            [string]$Username,
+            
+            [Parameter(Mandatory)]
+            [string]$Password
+        )
+        
+        try {
+            Write-UninstallLog "Stopping Valheim via SteamCMD..." -Level Information
+            if (-not (Invoke-SteamCMD "+app_stop 892970" $Username $Password)) {
+                return $false
+            }
+
+            Write-UninstallLog "Uninstalling Valheim via SteamCMD..." -Level Information
+            if (-not (Invoke-SteamCMD "+app_uninstall 892970" $Username $Password)) {
+                return $false
+            }
+
+            Write-UninstallLog "Cleaning up remaining Valheim files..." -Level Information
+            $valheimPaths = @(
+                "$env:PROGRAMFILES\Steam\steamapps\common\Valheim",
+                "$env:PROGRAMFILES(X86)\Steam\steamapps\common\Valheim"
+            )
+            
+            foreach ($path in $valheimPaths) {
+                if (Test-Path $path) {
+                    Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-UninstallLog "Removed directory: $path" -Level Information
+                }
+            }
+            
+            return $true
+        } catch {
+            return Stop-UninstallProcess "Error removing Valheim: $($_.Exception.Message)"
+        }
+    }
+
+    # Function to prompt for user confirmation
+    function Confirm-UserAction {
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory)]
+            [string]$Message
+        )
+        
+        if ($SkipUserPrompts) {
+            Write-UninstallLog "Skipping user prompt (auto-mode): $Message" -Level Information
+            return $true
+        }
+        
+        Write-Information $Message -InformationAction Continue
+        $input = Read-Host "Continue? (Y/N)"
+        return ($input -match '^[Yy]$')
+    }
+
+    # Main execution function
+    try {
+        # Check for administrative privileges
+        if (-not (Test-IsAdmin)) {
+            Write-Information "Administrative privileges required. Restarting as administrator..." -InformationAction Continue
+            Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+            return
+        }
+
+        # Ensure log directory exists
+        $logDirectory = Split-Path $LogPath -Parent
+        if ($logDirectory -and -not (Test-Path $logDirectory)) {
+            New-Item -ItemType Directory -Path $logDirectory -Force -ErrorAction Stop
+        }
+
+        # Start transcript logging
+        Start-Transcript -Path $LogPath -Append
+
+        Write-UninstallLog "=== Starting Vortex and Valheim Uninstallation Process ===" -Level Information
+        Write-Information "Starting complete uninstallation of Vortex and Valheim..." -InformationAction Continue
+
+        # Display warning and instructions
+        if (-not $SkipUserPrompts) {
+            Write-Information @"
+IMPORTANT INFORMATION:
+1. Steam must be open and running
+2. This script requires administrative privileges
+3. You will need to provide your Steam credentials
+4. All mod data and game saves will be permanently deleted
+5. This action cannot be undone - ensure you have backups if needed
+
+The script will perform these steps:
+- Close Vortex and remove all mods
+- Purge Vortex configuration data
+- Uninstall Vortex application
+- Install/update SteamCMD via Chocolatey
+- Use SteamCMD to uninstall Valheim
+- Clean up remaining files and directories
+"@ -InformationAction Continue
+
+            if (-not (Confirm-UserAction "Do you want to proceed with the complete uninstallation?")) {
+                Write-Information "Uninstallation cancelled by user." -InformationAction Continue
+                return
+            }
+        }
+
+        # Get Steam credentials if not provided
+        if (-not $SteamUsername) {
+            $SteamUsername = Read-Host -Prompt "Enter your Steam username"
+        }
+        
+        $steamPass = Read-Host -Prompt "Enter your Steam password" -AsSecureString
+        $steamPassUnsecure = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+            [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($steamPass)
+        )
+
+        Write-UninstallLog "Starting uninstallation process for user: $SteamUsername" -Level Information
+
+        # Step 1: Remove Vortex
+        if (-not (Remove-VortexApplication)) {
+            Write-Warning "Vortex removal encountered issues but continuing..."
+        }
+
+        # Step 2: Ensure Chocolatey is available
+        if (-not (Install-ChocoIfNeeded)) {
+            throw "Cannot continue without Chocolatey"
+        }
+
+        # Step 3: Install SteamCMD
+        if (-not (Install-SteamCMD)) {
+            throw "Cannot continue without SteamCMD"
+        }
+
+        # Step 4: Remove Valheim
+        if (-not (Remove-ValheimGame -Username $SteamUsername -Password $steamPassUnsecure)) {
+            Write-Warning "Valheim removal encountered issues but continuing..."
+        }
+
+        # Final summary
+        Write-Information "Uninstallation process completed successfully!" -InformationAction Continue
+        Write-UninstallLog "Uninstallation process completed successfully" -Level Information
+        Write-UninstallLog "=== End of Uninstallation Process ===" -Level Information
+
+        if (-not $SkipUserPrompts) {
+            Write-Information "Press Enter to exit..." -InformationAction Continue
+            Read-Host
+        }
+
+        return $true
+
+    } catch {
+        Write-UninstallLog "Critical error in main execution: $($_.Exception.Message)" -Level Error
+        Write-Error "Critical error during uninstallation: $($_.Exception.Message)"
+        
+        if (-not $SkipUserPrompts) {
+            Write-Information "Press Enter to exit..." -InformationAction Continue
+            Read-Host
+        }
+        
+        return $false
+    } finally {
+        Stop-Transcript -ErrorAction SilentlyContinue
+    }
 }
-catch {
-    Handle-Error $_.Exception.Message
-}
-finally {
-    Stop-Transcript
+
+# Execute the function if script is run directly (not dot-sourced)
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-VortexValheimUninstall
 }
