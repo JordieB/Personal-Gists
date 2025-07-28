@@ -1,42 +1,61 @@
 <#
 .SYNOPSIS
-    PowerShell profile script to set up the environment with custom functions, aliases, and imported modules.
+    Personal PowerShell profile for development and environment setup.
 
 .DESCRIPTION
-    This profile script initializes the PowerShell environment by dot-sourcing personal gists, 
-    importing necessary modules, and setting up custom configurations and aliases.
+    This profile:
+    - Loads custom personal utility scripts (gists)
+    - Initializes Java version manager (jabba)
+    - Sets up code-style tools (e.g., black for Python)
+    - Configures pipx to work with pyenv-win if available
+    - Applies Cursor-specific terminal fixes (PATH repair and env cleanup)
 
-.NOTES
-    Author: Jordie Belle
-    Ensure all referenced scripts and modules are available in the specified paths.
+.AUTHOR
+    Jordie Belle
+
+.TESTED
+    PowerShell 7.5.1 on Windows 10 and 11
 #>
 
-# Define the directory containing personal gists
-$ScriptDirectory = "C:\Users\jordi\projects\_personal_gists\powershell"
+# ── 1. Personal utility scripts (gists) ─────────────────────────────────────
+$ScriptDirectory = "D:\projects\_personal_gists\powershell"
 
-# Dot-source personal gists
-. "$ScriptDirectory\Create-PythonVirtualEnv.ps1"
-. "$ScriptDirectory\Update-PythonDependencies.ps1"
-. "$ScriptDirectory\Display-DirectoryTree.ps1"
-. "$ScriptDirectory\Start-Albion-Data-Project.ps1"
-. "$ScriptDirectory\Maintain-Choco.ps1"
-
-# Import the Chocolatey Profile that contains the necessary code to enable 
-# tab-completions to function for `choco`.
-# Be aware that if you are missing these lines from your profile, tab 
-# completion for `choco` will not function.
-# See https://ch0.co/tab-completion for details.
-$ChocolateyProfile = "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
-if (Test-Path($ChocolateyProfile)) {
-  Import-Module "$ChocolateyProfile"
+foreach ($file in @(
+    'Create-PythonVirtualEnv.ps1',
+    'Update-PythonDependencies.ps1',
+    'Display-DirectoryTree.ps1',
+    'Start-Albion-Data-Project.ps1',
+    'Maintain-Choco.ps1',
+    'Set-SpotifyPlaylistsPrivate.ps1',
+    'Create-DSProj.ps1'
+)) {
+    $f = Join-Path $ScriptDirectory $file
+    if (Test-Path $f) { . $f }
 }
 
-# Init jabba
-if (Test-Path "$HOME\.jabba\jabba.ps1") { . "$HOME\.jabba\jabba.ps1" }
+# ── 2. Java version manager (jabba) ────────────────────────────────────────
+$JabbaProfile = "$HOME\.jabba\jabba.ps1"
+if (Test-Path $JabbaProfile) { . $JabbaProfile }
 
-# Set the environment variable for Python post-processing with Black
+# ── 3. Code-style tooling defaults ─────────────────────────────────────────
 $env:PYTHON_POST_PROCESS_FILE = "black"
 
-# Set pipx to use whatever pyenv is set to
-$PIPX_DEFAULT_PYTHON = $(pyenv which python)
-[System.Environment]::SetEnvironmentVariable('PIPX_DEFAULT_PYTHON', $PIPX_DEFAULT_PYTHON, [System.EnvironmentVariableTarget]::User)
+# ── 4. pipx + pyenv-win integration ────────────────────────────────────────
+if (Get-Command pyenv -ErrorAction SilentlyContinue) {
+    $env:PIPX_DEFAULT_PYTHON = pyenv which python
+}
+
+# ── 5. Cursor-specific terminal fixes ──────────────────────────────────────
+if ($env:CURSOR_TRACE_ID) {
+    # Ensure critical system paths are restored for Windows tooling
+    $systemPaths = @(
+        "C:\Windows\System32",
+        "C:\Windows\System32\Wbem",
+        "C:\Windows\System32\WindowsPowerShell\v1.0"
+    )
+    $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine").Split(";")
+    $env:PATH = ($systemPaths + $machinePath) -join ";"
+
+    # Remove rogue pyenv variables injected into Cursor shell
+    Remove-Item Env:PYENV_HOME, Env:PYENV_ROOT, Env:PYENV -ErrorAction SilentlyContinue
+}
