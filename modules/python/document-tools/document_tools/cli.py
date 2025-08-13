@@ -8,9 +8,9 @@ def example(option: bool = False):
     Example command for document tools operations.
     """
     if option:
-        print(f"Example document tools command with option")
+        print("Example document tools command with option")
     else:
-        print(f"Example document tools command")
+        print("Example document tools command")
 
 if __name__ == "__main__":
     app()
