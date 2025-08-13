@@ -1,0 +1,18 @@
+[project]
+name = "document-tools"
+version = "0.1.0"
+description = "Tools for document tools"
+requires-python = ">=3.9"
+
+[project.scripts]
+document-tools = "document_tools.cli:app"
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["E","F","I","UP"]
+
+[tool.pytest.ini_options]
+addopts = "-q" 
