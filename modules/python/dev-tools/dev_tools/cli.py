@@ -8,9 +8,9 @@ def example(option: bool = False):
     Example command for dev tools operations.
     """
     if option:
-        print(f"Example dev tools command with option")
+        print("Example dev tools command with option")
     else:
-        print(f"Example dev tools command")
+        print("Example dev tools command")
 
 if __name__ == "__main__":
     app()

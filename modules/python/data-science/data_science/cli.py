@@ -8,9 +8,9 @@ def example(option: bool = False):
     Example command for data science operations.
     """
     if option:
-        print(f"Example data science command with option")
+        print("Example data science command with option")
     else:
-        print(f"Example data science command")
+        print("Example data science command")
 
 if __name__ == "__main__":
     app()
