@@ -1,0 +1,173 @@
+{
+  "scripts": [
+    {
+      "file": "powershell/Backup-ReWASDConfigs.ps1",
+      "language": "powershell",
+      "topic": "system-admin",
+      "description": "Backup ReWASD configuration files"
+    },
+    {
+      "file": "powershell/Bump-Poetry-Deps-Latest.ps1",
+      "language": "powershell", 
+      "topic": "python-tools",
+      "description": "Update Poetry dependencies to latest versions"
+    },
+    {
+      "file": "powershell/Create-DSProj.ps1",
+      "language": "powershell",
+      "topic": "data-science",
+      "description": "Creates data science project scaffold with directories and files"
+    },
+    {
+      "file": "powershell/Create-IndexShortcuts.ps1",
+      "language": "powershell",
+      "topic": "file-utilities",
+      "description": "Create index shortcuts for file navigation"
+    },
+    {
+      "file": "powershell/Create-PythonVirtualEnv.ps1",
+      "language": "powershell",
+      "topic": "python-tools",
+      "description": "Creates and activates Python virtual environments"
+    },
+    {
+      "file": "powershell/Display-DirectoryTree.ps1",
+      "language": "powershell",
+      "topic": "file-utilities",
+      "description": "Displays directory tree structure with customizable depth"
+    },
+    {
+      "file": "powershell/Ensure-PoetryAvailability.ps1",
+      "language": "powershell",
+      "topic": "python-tools",
+      "description": "Ensures Poetry is available and accessible in PowerShell"
+    },
+    {
+      "file": "powershell/Example-PSProfileWithSourcedFuncs.ps1",
+      "language": "powershell",
+      "topic": "dev-tools",
+      "description": "Example PowerShell profile with sourced functions"
+    },
+    {
+      "file": "powershell/Full-Uninstall-Vortex-and-Valheim.ps1",
+      "language": "powershell",
+      "topic": "software-management",
+      "description": "Complete uninstallation of Vortex and Valheim"
+    },
+    {
+      "file": "powershell/Install-ChocoSoftware.ps1",
+      "language": "powershell",
+      "topic": "package-management",
+      "description": "Automated software installation using Chocolatey"
+    },
+    {
+      "file": "powershell/Maintain-Choco.ps1", 
+      "language": "powershell",
+      "topic": "package-management",
+      "description": "Maintenance tasks for Chocolatey package manager"
+    },
+    {
+      "file": "powershell/profile.ps1",
+      "language": "powershell",
+      "topic": "dev-tools",
+      "description": "PowerShell profile configuration"
+    },
+    {
+      "file": "powershell/Remove-BluetoothDevice.ps1",
+      "language": "powershell",
+      "topic": "system-admin",
+      "description": "Remove Bluetooth devices from system"
+    },
+    {
+      "file": "powershell/Remove-Edge.ps1",
+      "language": "powershell",
+      "topic": "software-management",
+      "description": "Remove Microsoft Edge and harden against reinstalls"
+    },
+    {
+      "file": "powershell/Set-SpotifyPlaylistsPrivate.ps1",
+      "language": "powershell",
+      "topic": "api-integration",
+      "description": "Make Spotify playlists private using Spotify API"
+    },
+    {
+      "file": "powershell/Start-Albion-Data-Project.ps1",
+      "language": "powershell",
+      "topic": "misc-tools",
+      "description": "Start Albion data project"
+    },
+    {
+      "file": "powershell/Toggle-SecurityServices.ps1",
+      "language": "powershell",
+      "topic": "system-admin",
+      "description": "Toggle Malwarebytes and Windows Defender services"
+    },
+    {
+      "file": "powershell/Update-PythonDependencies.ps1",
+      "language": "powershell",
+      "topic": "python-tools",
+      "description": "Update Python dependencies and packages"
+    },
+    {
+      "file": "python/datasets.py",
+      "language": "python",
+      "topic": "data-science",
+      "description": "Dataset optimization and conversion utilities"
+    },
+    {
+      "file": "python/etl_focused.py",
+      "language": "python",
+      "topic": "data-science",
+      "description": "ETL and data processing utilities"
+    },
+    {
+      "file": "python/general.py",
+      "language": "python",
+      "topic": "dev-tools",
+      "description": "General utility functions for Python projects"
+    },
+    {
+      "file": "python/modeling_focused.py",
+      "language": "python",
+      "topic": "data-science",
+      "description": "Machine learning modeling utilities"
+    },
+    {
+      "file": "python/pdf_to_md.py",
+      "language": "python",
+      "topic": "document-tools",
+      "description": "Convert PDF files to Markdown format"
+    },
+    {
+      "file": "zsh/macos_maintenance.sh",
+      "language": "zsh",
+      "topic": "system-maintenance",
+      "description": "Comprehensive macOS system maintenance script"
+    },
+    {
+      "file": "command_prompt/open_vsc_with_wsl.bat",
+      "language": "command_prompt",
+      "topic": "dev-tools", 
+      "description": "Open VSCode with WSL remote connection"
+    }
+  ],
+  "topics": [
+    "api-integration",
+    "data-science", 
+    "dev-tools",
+    "document-tools",
+    "file-utilities",
+    "misc-tools",
+    "package-management",
+    "python-tools",
+    "software-management",
+    "system-admin",
+    "system-maintenance"
+  ],
+  "languages": [
+    "powershell",
+    "python", 
+    "zsh",
+    "command_prompt"
+  ]
+}

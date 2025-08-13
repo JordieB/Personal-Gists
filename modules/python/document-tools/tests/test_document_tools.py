@@ -1,0 +1,17 @@
+import pytest
+from typer.testing import CliRunner
+from document_tools.cli import app
+
+runner = CliRunner()
+
+def test_example_command():
+    """Test the example command."""
+    result = runner.invoke(app, ["example"])
+    assert result.exit_code == 0
+    assert "document tools" in result.stdout
+
+def test_example_command_with_option():
+    """Test the example command with option."""
+    result = runner.invoke(app, ["example", "--option"])
+    assert result.exit_code == 0
+    assert "option" in result.stdout
