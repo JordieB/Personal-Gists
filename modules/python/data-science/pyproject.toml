@@ -1,0 +1,18 @@
+[project]
+name = "data-science"
+version = "0.1.0"
+description = "Tools for data science"
+requires-python = ">=3.9"
+
+[project.scripts]
+data-science = "data_science.cli:app"
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["E","F","I","UP"]
+
+[tool.pytest.ini_options]
+addopts = "-q" 
