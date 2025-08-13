@@ -1,0 +1,18 @@
+name: CI - Shell
+on: [push, pull_request]
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y zsh shellcheck bats
+      - name: Lint POSIX/bash-compatible
+        run: |
+          FILES=$(git ls-files '*.sh' '*.zsh' '*.plugin.zsh' '*.bash' || true)
+          if [ -n "$FILES" ]; then shellcheck -x $FILES || true; fi
+      - name: Zsh syntax check
+        run: |
+          FILES=$(git ls-files '*.zsh' '*.plugin.zsh' || true)
+          if [ -n "$FILES" ]; then zsh -n $FILES; fi
+      - name: bats tests
+        run: bats modules/zsh || true
