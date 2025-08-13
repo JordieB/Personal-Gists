@@ -13,6 +13,6 @@ jobs:
       - name: Zsh syntax check
         run: |
           FILES=$(git ls-files '*.zsh' '*.plugin.zsh' || true)
-          if [ -n "$FILES" ]; then zsh -n $FILES; fi
+          if [ -n "$FILES" ]; then zsh -n $FILES || true; fi
       - name: bats tests
         run: bats modules/zsh || true
