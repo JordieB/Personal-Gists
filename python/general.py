@@ -461,3 +461,4 @@ def demonstrate_notebook_interactions():
 
         # Verify the variable from the other notebook is in current namespace
         print(new_var_from_outside_nb)
+
