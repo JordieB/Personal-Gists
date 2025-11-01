@@ -242,26 +242,27 @@ function Invoke-ChocoSoftwareInstallation {
         
         return @(
             # Personal Applications
-            "discord", "notion", "spotify", "steam", "Firefox",
+            "discord", "Firefox", "notion", "obsidian", "protonmail", "spotify", "steam",
             
             # Development Tools
-            "powershell-core", "python", "pyenv-win", "vscode", "docker-desktop", 
-            "nodejs", "bfg-repo-cleaner", "chromium", "steamcmd", "git",
+            "bfg-repo-cleaner", "chromium", "docker-desktop", "git", "make", "nodejs", 
+            "nvm", "powershell-core", "postman", "python", "pyenv-win", "steamcmd", 
+            "uv", "vscode",
             
             # Development Dependencies
-            "visualstudio2019-workload-vctools", "cuda", "ffmpeg-full", "adb", 
-            "openal", "tesseract",
+            "adb", "cuda", "ffmpeg-full", "openal", "protoc", "tesseract", 
+            "visualstudio2019-workload-vctools", "visualstudio2022buildtools",
             
             # Utilities
-            "bitwarden", "protonvpn", "ccleaner", "calibre", "hwinfo", 
-            "libreoffice-fresh", "geforce-experience", "audacity", "powertoys", 
-            "qbittorrent", "malwarebytes", "f.lux", "zoom", "gimp", "irfanview", 
-            "jpegview", "vlc", "wireshark", "jdownloader", "scrcpy", "speccy", 
-            "sunshine", "vortex", "wiztree",
+            "7zip", "audacity", "autohotkey.portable", "ccleaner", "calibre", 
+            "espanso", "f.lux", "gimp", "hwinfo", "irfanview", "jdownloader", 
+            "jpegview", "libreoffice-fresh", "malwarebytes", "microsoft-teams-new-bootstrapper", 
+            "nvidia-app", "powertoys", "protonvpn", "qbittorrent", "scrcpy", "speccy", 
+            "sunshine", "vlc", "vortex", "wireshark", "winscp", "wiztree", "zoom",
             
             # Runtime Dependencies
-            "vcredist-all", "directx", "dotnet", "dotnet-desktopruntime", 
-            "dotnetfx", "openjdk", "xna"
+            "directx", "dotnet", "dotnet-desktopruntime", "dotnetfx", "openjdk", 
+            "vcredist-all", "vigembus"
         )
     }
 

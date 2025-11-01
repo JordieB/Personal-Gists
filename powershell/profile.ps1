@@ -24,9 +24,7 @@ foreach ($file in @(
     'Create-PythonVirtualEnv.ps1',
     'Update-PythonDependencies.ps1',
     'Display-DirectoryTree.ps1',
-    'Start-Albion-Data-Project.ps1',
     'Maintain-Choco.ps1',
-    'Set-SpotifyPlaylistsPrivate.ps1',
     'Create-DSProj.ps1'
 )) {
     $f = Join-Path $ScriptDirectory $file
@@ -41,8 +39,35 @@ if (Test-Path $JabbaProfile) { . $JabbaProfile }
 $env:PYTHON_POST_PROCESS_FILE = "black"
 
 # ── 4. pipx + pyenv-win integration ────────────────────────────────────────
+# Set up pyenv environment variables if not already set
+if (-not $env:PYENV) {
+    $env:PYENV = "C:\Users\jordi\.pyenv\pyenv-win\"
+    $env:PYENV_ROOT = "C:\Users\jordi\.pyenv\pyenv-win\"
+    $env:PYENV_HOME = "C:\Users\jordi\.pyenv\pyenv-win\"
+}
+
+# Add pyenv to PATH if not already there
+$pyenvBinPath = "C:\Users\jordi\.pyenv\pyenv-win\bin"
+$pyenvShimsPath = "C:\Users\jordi\.pyenv\pyenv-win\shims"
+
+if ($env:PATH -notlike "*$pyenvBinPath*") {
+    $env:PATH = "$pyenvBinPath;$env:PATH"
+}
+if ($env:PATH -notlike "*$pyenvShimsPath*") {
+    $env:PATH = "$pyenvShimsPath;$env:PATH"
+}
+
 if (Get-Command pyenv -ErrorAction SilentlyContinue) {
-    $env:PIPX_DEFAULT_PYTHON = pyenv which python
+    try {
+        # Test if pyenv is working correctly before setting the environment variable
+        $pyenvPython = pyenv which python 2>$null
+        if ($pyenvPython -and (Test-Path $pyenvPython)) {
+            $env:PIPX_DEFAULT_PYTHON = $pyenvPython
+        }
+    } catch {
+        # Silently ignore pyenv errors to prevent cscript issues
+        Write-Debug "pyenv integration failed: $($_.Exception.Message)"
+    }
 }
 
 # ── 5. Cursor-specific terminal fixes ──────────────────────────────────────
