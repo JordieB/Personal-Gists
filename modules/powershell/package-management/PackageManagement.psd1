@@ -6,7 +6,7 @@
   CompanyName       = 'REPO_OWNER'
   Copyright         = ''
   PowerShellVersion = '5.1'
-  FunctionsToExport = @()  # auto-filled by Export-ModuleMember
+  FunctionsToExport = @('Invoke-PackageManagementExample')
   AliasesToExport   = @()
   CmdletsToExport   = @()
   PrivateData       = @{}
