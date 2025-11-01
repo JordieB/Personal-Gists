@@ -52,9 +52,17 @@ call modules/command_prompt/dev-tools/dev-tools.cmd --help
 - **Topic-Organized**: Modules grouped by functional area, not language
 - **Multi-Language**: PowerShell, Python, Zsh, and Command Prompt support
 - **Consistent Structure**: Every module includes docs, examples, and tests
-- **CI/CD Ready**: Automated testing and linting for all languages
 - **Easy Installation**: Simple import/install commands for each module
 - **Production Ready**: Proper error handling, logging, and validation
+
+## ⚠️ Module Status
+
+**Note:** Most modules are currently **stubs** (placeholders) with example functions. They are planned for future implementation. The original scripts that will be converted into these modules are located in `powershell/`, `python/`, `zsh/`, and `command_prompt/` directories, with preserved copies in `snippets/`.
+
+- ✅ **Implemented**: `api-integration` (PowerShell) - Spotify playlist management
+- 🔨 **Stubs**: All other modules are placeholders planned for implementation
+
+See [Module Index](docs/index.md) and individual module READMEs for details on planned implementation and which scripts will be converted.
 
 ## 📁 Repository Structure
 
@@ -67,22 +75,15 @@ call modules/command_prompt/dev-tools/dev-tools.cmd --help
 │  └─ command_prompt/<topic>/ # Command Prompt utilities (.cmd)
 ├─ snippets/                   # Original scripts (preserved)
 ├─ docs/                      # Documentation and module index
-├─ .github/workflows/         # CI/CD pipelines
 └─ README.md                  # This file
 ```
 
 ## 🧪 Quality & Testing
 
-- **Automated Testing**: CI runs tests for all languages on every push
-- **Linting**: PSScriptAnalyzer, Ruff, Black, shellcheck
 - **Documentation**: Every function/command has help documentation
 - **Examples**: Complete usage examples for each module
 - **Error Handling**: Robust error handling and meaningful messages
-
-### Test Status
-[![CI - PowerShell](../../actions/workflows/ci-powershell.yml/badge.svg)](../../actions/workflows/ci-powershell.yml)
-[![CI - Python](../../actions/workflows/ci-python.yml/badge.svg)](../../actions/workflows/ci-python.yml)
-[![CI - Shell](../../actions/workflows/ci-shell.yml/badge.svg)](../../actions/workflows/ci-shell.yml)
+- **Testing**: Module test suites included (run locally as needed)
 
 ## 📖 Documentation
 
@@ -102,10 +103,6 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 1. Add raw snippet to `/snippets/<lang>/`
 2. Follow the [Snippet → Module Checklist](CONTRIBUTING.md#snippet--module-checklist)
 3. Open a pull request with your module
-
-## 🏷️ Version History
-
-See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ## 📝 License
 

@@ -24,4 +24,4 @@ See the `examples/` directory for complete usage examples.
 
 ## Notes
 - Requires Spotishell PowerShell module for Spotify integration
-- TODO: Add support for other API integrations as needed
+- Future implementations may add support for other API integrations as needed
