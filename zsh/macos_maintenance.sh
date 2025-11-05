@@ -276,6 +276,104 @@ provide_error_suggestions() {
     esac
 }
 
+# Function to run mas upgrade with output filtering and error handling
+run_mas_upgrade() {
+    local description="$1"
+    local timeout_seconds="${2:-600}"  # Default 10 minutes timeout
+    
+    log "info" "Running: $description"
+    
+    # Create a temporary file for filtering output
+    local temp_output=$(mktemp)
+    local temp_error=$(mktemp)
+    local exit_code=0
+    local timeout_cmd=""
+    
+    # Check for timeout command (may be 'timeout' or 'gtimeout' on macOS with coreutils)
+    if command -v timeout &>/dev/null; then
+        timeout_cmd="timeout"
+    elif command -v gtimeout &>/dev/null; then
+        timeout_cmd="gtimeout"
+    fi
+    
+    # Run mas upgrade with timeout (if available), filtering spinner and ANSI escape sequences
+    # Suppress spinner output by filtering lines containing spinner pattern and animation
+    if [[ -n "$timeout_cmd" ]]; then
+        # Use timeout command if available
+        # Filter spinner lines and ANSI codes, redirect filtered output
+        # Run mas upgrade with stderr redirected to temp file, filter stdout
+        $timeout_cmd "$timeout_seconds" mas upgrade > >( \
+            grep -v -E '^\s*\[.*\]\s*Updating Mac App Store apps' | \
+            grep -v -E 'Updating Mac App Store apps' | \
+            sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | \
+            sed 's/\x1b\[K//g' | \
+            sed '/^\s*$/d' > "$temp_output" 2>/dev/null) 2>"$temp_error"
+        exit_code=$?
+    else
+        # Fallback: run without timeout but filter output aggressively
+        log "debug" "timeout command not available, running without timeout protection"
+        mas upgrade > >( \
+            grep -v -E '^\s*\[.*\]\s*Updating Mac App Store apps' | \
+            grep -v -E 'Updating Mac App Store apps' | \
+            sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | \
+            sed 's/\x1b\[K//g' | \
+            sed '/^\s*$/d' > "$temp_output" 2>/dev/null) 2>"$temp_error"
+        exit_code=$?
+    fi
+    
+    # Check for known benign errors (error code -128 from Mac App Store API)
+    local error_output=$(cat "$temp_error" 2>/dev/null || echo "")
+    local has_benign_error=false
+    
+    if echo "$error_output" | grep -q "Error Domain=ISErrorDomain Code=-128"; then
+        has_benign_error=true
+        log "warn" "Mac App Store API returned error code -128 (known benign error, update may have succeeded)"
+    fi
+    
+    # Check if there are actual updates that were applied
+    if [[ $exit_code -eq 0 ]] || [[ "$has_benign_error" == true ]]; then
+        # Check if any meaningful output was produced (indicating updates)
+        if [[ -s "$temp_output" ]]; then
+            local filtered_output=$(cat "$temp_output" | grep -v -E '^\s*$' | head -20)
+            if [[ -n "$filtered_output" ]]; then
+                log "info" "Mac App Store updates processed"
+                if [[ "$VERBOSE" == true ]]; then
+                    echo "$filtered_output" | while IFS= read -r line; do
+                        [[ -n "$line" ]] && log "debug" "$line"
+                    done
+                fi
+            fi
+        fi
+        
+        if [[ "$has_benign_error" == true ]]; then
+            log "info" "Mac App Store updates completed (with benign API warning)"
+            rm -f "$temp_output" "$temp_error"
+            return 0
+        else
+            log "info" "Mac App Store updates completed successfully"
+            rm -f "$temp_output" "$temp_error"
+            return 0
+        fi
+    else
+        # Check if command timed out (exit code 124 for timeout command)
+        if [[ -n "$timeout_cmd" ]] && [[ $exit_code -eq 124 ]]; then
+            log "error" "Mac App Store update timed out after ${timeout_seconds}s"
+            rm -f "$temp_output" "$temp_error"
+            return 1
+        elif [[ $exit_code -ne 0 ]] && [[ "$has_benign_error" != true ]]; then
+            # Log actual errors (excluding benign ones)
+            if [[ -n "$error_output" ]] && ! echo "$error_output" | grep -q "Error Domain=ISErrorDomain Code=-128"; then
+                log "error" "Mac App Store update failed with error:"
+                echo "$error_output" | while IFS= read -r line; do
+                    [[ -n "$line" ]] && log "error" "  $line"
+                done
+            fi
+            rm -f "$temp_output" "$temp_error"
+            return 1
+        fi
+    fi
+}
+
 # Keep sudo alive function (will be started later if needed)
 keep_sudo_alive() {
     while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
@@ -450,8 +548,41 @@ monitor_resources() {
     available_memory=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
     available_memory=$((available_memory * 4096 / 1024 / 1024))  # Convert to MB
     
+    # Set global memory state for script behavior adjustments
+    export LOW_MEMORY_MODE=false
+    export CRITICAL_MEMORY_MODE=false
+    
     if [[ $available_memory -lt 512 ]]; then
         log "warn" "Low memory warning: ${available_memory}MB available during $operation"
+        export LOW_MEMORY_MODE=true
+        
+        # Adjust behavior for low memory
+        if [[ "$TURBO_MODE" == true ]]; then
+            log "info" "Reducing parallelism due to low memory"
+            PARALLEL_JOBS=$((PARALLEL_JOBS / 2))
+            if [[ $PARALLEL_JOBS -lt 1 ]]; then
+                PARALLEL_JOBS=1
+            fi
+        fi
+    fi
+    
+    if [[ $available_memory -lt 256 ]]; then
+        log "warn" "Critical memory warning: ${available_memory}MB available during $operation"
+        export CRITICAL_MEMORY_MODE=true
+        
+        # Disable turbo mode and reduce parallelism for critical memory
+        if [[ "$TURBO_MODE" == true ]]; then
+            log "info" "Disabling turbo mode due to critical memory conditions"
+            TURBO_MODE=false
+            PARALLEL_JOBS=1
+        fi
+        
+        # Provide actionable recommendations
+        log "info" "💡 Recommendations for low memory:"
+        log "info" "   - Close unnecessary applications"
+        log "info" "   - Consider running maintenance during off-peak hours"
+        log "info" "   - Some non-critical maintenance tasks may be skipped"
+        log "info" "   - Monitor system activity with Activity Monitor"
     fi
     
     # Check CPU load
@@ -822,18 +953,15 @@ check_disk_space() {
         if [[ $available_space -lt $aggressive_cleanup_threshold ]]; then
             log "warning" "Critical disk space: performing aggressive cleanup"
             
-            # First try to clean up Restic repository
-            if [[ -d "$backup_dir/restic" ]]; then
-                cleanup_old_backups "$backup_dir/restic" "aggressive"
+            # First try to clean up old rsync backups (keep only last 2)
+            if [[ -d "$backup_dir" ]]; then
+                cleanup_old_rsync_backups "$backup_dir" 2
             else
-                log "info" "No existing repository to clean up"
+                log "info" "No backup directory to clean up"
             fi
             
             # Additional aggressive cleanup for critical space
             log "info" "Performing additional aggressive cleanup..."
-            
-            # Clean up Restic cache
-            RESTIC_PASSWORD_FILE="$HOME/.config/restic/password.txt" restic cache --cleanup --repo "$backup_dir/restic" 2>/dev/null || true
             
             # Clean up system caches
             sudo rm -rf /var/folders/*/T/* 2>/dev/null || true
@@ -845,10 +973,11 @@ check_disk_space() {
             
         else
             log "info" "Performing standard cleanup"
-            if [[ -d "$backup_dir/restic" ]]; then
-                cleanup_old_backups "$backup_dir/restic" "standard"
+            if [[ -d "$backup_dir" ]]; then
+                # Clean up old rsync backups (keep last 5)
+                cleanup_old_rsync_backups "$backup_dir" 5
             else
-                log "info" "No existing repository to clean up"
+                log "info" "No backup directory to clean up"
             fi
         fi
         
@@ -917,281 +1046,6 @@ emergency_disk_cleanup() {
     log "info" "Emergency cleanup completed"
 }
 
-# Function to clean up old backups based on space requirements
-cleanup_old_backups() {
-    local repo_path="$1"
-    local mode="$2"
-    local password_file="$HOME/.config/restic/password.txt"
-    
-    case "$mode" in
-        "aggressive")
-            # Keep only last 2 daily, 1 weekly, 1 monthly
-            log "info" "Performing aggressive cleanup of old backups..."
-            check_timeout  # Check if we should exit due to timeout
-            if ! RESTIC_PASSWORD_FILE="$password_file" timeout 300 restic forget \
-                --repo "$repo_path" \
-                --keep-daily 2 \
-                --keep-weekly 1 \
-                --keep-monthly 1 \
-                --prune; then
-                log "error" "Aggressive cleanup failed"
-                return 1
-            fi
-            ;;
-        "standard")
-            # Keep 5 daily, 2 weekly, 2 monthly
-            log "info" "Performing standard cleanup of old backups..."
-            if ! RESTIC_PASSWORD_FILE="$password_file" timeout 300 restic forget \
-                --repo "$repo_path" \
-                --keep-daily 5 \
-                --keep-weekly 2 \
-                --keep-monthly 2 \
-                --prune; then
-                log "error" "Standard cleanup failed"
-                return 1
-            fi
-            ;;
-    esac
-    
-    return 0
-}
-
-# Function to verify backup integrity with enhanced checks
-verify_backup() {
-    local repo_path="$1"
-    local password_file="$2"
-    local latest_snapshot
-    
-    log "info" "Verifying latest backup integrity with enhanced checks..."
-    
-    # Get the latest snapshot ID
-    latest_snapshot=$(RESTIC_PASSWORD_FILE="$password_file" restic snapshots --repo "$repo_path" --latest 1 --json | jq -r '.[0].id')
-    if [[ -z "$latest_snapshot" ]]; then
-        log "error" "Failed to get latest snapshot ID"
-        return 1
-    fi
-    
-    # Simple verification - just check if backup completed successfully
-    log "info" "Verifying backup completion..."
-    
-    # 3. Test restore of multiple critical files
-    local test_restore_dir=$(mktemp -d)
-    log "info" "Testing restore capability with critical files..."
-    
-    local test_files=(
-        "$HOME/.zshrc"
-        "$HOME/.bash_profile"
-        "$HOME/.gitconfig"
-    )
-    
-    local restore_success=true
-    for test_file in "${test_files[@]}"; do
-        if [[ -f "$test_file" ]]; then
-            if ! RESTIC_PASSWORD_FILE="$password_file" timeout 300 restic restore \
-                --repo "$repo_path" \
-                --target "$test_restore_dir" \
-                --include "$test_file" \
-                "$latest_snapshot" > /dev/null 2>&1; then
-                log "warn" "Restore test failed for $test_file"
-                restore_success=false
-            fi
-        fi
-    done
-    
-    # 4. Generate backup checksum for integrity tracking
-    log "info" "Generating backup checksum for integrity tracking..."
-    local backup_checksum
-    backup_checksum=$(RESTIC_PASSWORD_FILE="$password_file" restic cat --repo "$repo_path" snapshot "$latest_snapshot" | sha256sum | cut -d' ' -f1)
-    if [[ -n "$backup_checksum" ]]; then
-        echo "$backup_checksum" > "$repo_path/../backup_checksum.txt"
-        log "info" "Backup checksum saved: $backup_checksum"
-    fi
-    
-    # Cleanup test restore
-    rm -rf "$test_restore_dir"
-    
-    if [[ "$restore_success" == true ]]; then
-        log "info" "✅ Backup verification completed successfully"
-        log "info" "   - Repository integrity: PASSED"
-        log "info" "   - Data integrity: PASSED"
-        log "info" "   - Restore capability: PASSED"
-        log "info" "   - Checksum generated: PASSED"
-        return 0
-    else
-        log "warn" "⚠️  Backup verification completed with warnings"
-        log "warn" "   - Some restore tests failed, but backup may still be usable"
-        return 0
-    fi
-}
-
-# Function to clean up repository and check health
-cleanup_repository() {
-    local repo_path="$1"
-    local password_file="$2"
-    local retries=0
-    local success=false
-    
-    while [[ $retries -lt $MAX_RETRIES && $success == false ]]; do
-        log "info" "Attempting repository cleanup (attempt $((retries + 1))/$MAX_RETRIES)..."
-        
-        # Try Restic unlock with timeout to prevent hanging
-        if RESTIC_PASSWORD_FILE="$password_file" timeout 10 restic unlock --repo "$repo_path" --remove-all 2>/dev/null; then
-            log "info" "Successfully unlocked repository"
-            success=true
-        else
-            log "warning" "Restic unlock failed, but continuing with backup..."
-            success=true  # Continue anyway - Restic will handle its own locks
-        fi
-        
-        ((retries++))
-    done
-    
-    if [[ $success == false ]]; then
-        log "error" "Failed to clean up repository after $MAX_RETRIES attempts"
-        return 1
-    fi
-    
-    # Skip repository integrity check - not needed for routine maintenance
-    log "info" "Skipping repository integrity check for faster operation..."
-    
-    return 0
-}
-
-# Function to perform simple rsync-based backup (replacing Restic)
-perform_simple_backup() {
-    local source_dir="$1"
-    local backup_dir="$2"
-    local password_file="$HOME/.config/restic/password.txt"
-    local retries=0
-    local success=false
-    
-    # Check disk space before backup
-    if ! check_disk_space "$backup_dir"; then
-        log "error" "Insufficient disk space for backup"
-        return 1
-    fi
-    
-    # Ensure backup directory exists
-    mkdir -p "$backup_dir"
-    
-    # Check if Homebrew is installed
-    if ! command -v brew &>/dev/null; then
-        log "error" "Homebrew is not installed. Installing..."
-        if ! /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; then
-            log "error" "Failed to install Homebrew"
-            return 1
-        fi
-    fi
-    
-    # Install Restic if needed
-    if ! command -v restic &>/dev/null; then
-        log "info" "Installing Restic..."
-        if ! brew install restic; then
-            log "error" "Failed to install Restic"
-            return 1
-        fi
-    fi
-    
-    # Ensure password file directory exists and create password if needed
-    mkdir -p "$(dirname "$password_file")"
-    if [[ ! -f "$password_file" ]]; then
-        log "info" "Generating secure password for Restic repository..."
-        if ! openssl rand -base64 32 > "$password_file"; then
-            log "error" "Failed to generate password file"
-            return 1
-        fi
-        chmod 600 "$password_file"
-    fi
-    
-    # Initialize or repair repository
-    if [[ -d "$backup_dir/restic" ]]; then
-        if ! cleanup_repository "$backup_dir/restic" "$password_file"; then
-            log "error" "Failed to clean up repository"
-            return 1
-        fi
-    else
-        log "info" "Initializing new Restic repository..."
-        if ! RESTIC_PASSWORD_FILE="$password_file" restic init --repo "$backup_dir/restic"; then
-            log "error" "Failed to initialize repository"
-            return 1
-        fi
-    fi
-    
-    # Create temporary exclude file
-    local exclude_file=$(mktemp)
-    cat > "$exclude_file" << 'EOF'
-.Trash
-.Trashes
-.fseventsd
-.Spotlight-V100
-Library/Caches
-node_modules
-.git
-Library/Application Support/FileProvider
-Library/Group Containers/group.com.apple.CoreSpeech
-Library/Group Containers/group.com.apple.secure-control-center-preferences
-EOF
-    
-    # Perform backup with retries
-    while [[ $retries -lt $MAX_RETRIES && $success == false ]]; do
-        log "info" "Starting backup (attempt $((retries + 1))/$MAX_RETRIES)..."
-        
-        # Clean up any stale temporary files before backup
-        RESTIC_PASSWORD_FILE="$password_file" restic cache --cleanup --repo "$backup_dir/restic" 2>/dev/null || true
-        
-        if sudo -E RESTIC_PASSWORD_FILE="$password_file" timeout $BACKUP_TIMEOUT restic backup \
-            --repo "$backup_dir/restic" \
-            --exclude-file="$exclude_file" \
-            --exclude-caches \
-            --one-file-system \
-            --cleanup-cache \
-            --no-lock \
-            "$source_dir" 2>&1; then
-            success=true
-            log "info" "Backup completed successfully"
-        else
-            local exit_code=$?
-            if [[ $exit_code -eq 124 ]]; then  # timeout exit code
-                log "error" "Backup timed out after $((BACKUP_TIMEOUT/60)) minutes"
-            else
-                log "warning" "Backup attempt $((retries + 1)) failed with exit code $exit_code, cleaning up..."
-            fi
-            cleanup_repository "$backup_dir/restic" "$password_file"
-            sleep 5
-        fi
-        
-        ((retries++))
-    done
-    
-    # Clean up temporary exclude file
-    rm -f "$exclude_file"
-    
-    if [[ $success == false ]]; then
-        log "error" "Backup failed after $MAX_RETRIES attempts"
-        return 1
-    fi
-    
-    # Cleanup old snapshots
-    log "info" "Cleaning up old snapshots..."
-    if ! RESTIC_PASSWORD_FILE="$password_file" timeout 300 restic forget \
-        --repo "$backup_dir/restic" \
-        --keep-daily 7 \
-        --keep-weekly 4 \
-        --keep-monthly 12 \
-        --prune; then
-        log "warning" "Snapshot cleanup failed"
-    fi
-    
-    # After successful backup, verify its integrity
-    if [[ $success == true ]]; then
-        if ! verify_backup "$backup_dir/restic" "$password_file"; then
-            log "error" "Backup verification failed"
-            return 1
-        fi
-    fi
-    
-    return 0
-}
 
 # Chunked backup function for large datasets
 perform_chunked_backup() {
@@ -1796,7 +1650,7 @@ backup_system_preferences() {
 
 # Main backup execution
 log_section_start "System Backup"
-echo "Setting up encrypted Restic backup..."
+echo "Setting up rsync backup..."
 local_backup_dir="$HOME/.local/backups"
 
 # Backup system preferences first
@@ -1831,11 +1685,11 @@ fi
 # Clear user-level caches with proper permission handling
 log "info" "Clearing user-level caches in ~/Library/Caches/..."
 
-# Use find to handle permission issues gracefully
-find ~/Library/Caches -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || {
-    # If that fails, try with sudo for stubborn files
+# Use find to handle permission issues gracefully, excluding Restic cache directory
+find ~/Library/Caches -mindepth 1 -maxdepth 1 -type d -not -name "restic" -exec rm -rf {} + 2>/dev/null || {
+    # If that fails, try with sudo for stubborn files (still excluding Restic cache)
     log "warn" "Some cache files require elevated permissions, attempting with sudo..."
-    sudo find ~/Library/Caches -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+    sudo find ~/Library/Caches -mindepth 1 -maxdepth 1 -type d -not -name "restic" -exec rm -rf {} + 2>/dev/null || true
 }
 
 log "info" "User-level caches cleared."
@@ -1907,13 +1761,16 @@ log_section_end "Homebrew Maintenance"
 #-----------------------------------------------------------------------
 log_section_start "Mac App Store Updates"
 if command -v mas &>/dev/null; then
-    run_command "mas outdated" "Checking for Mac App Store updates"
-    mas_updates="$(mas outdated)"
+    # Check for updates (suppress output if no updates)
+    mas_updates="$(mas outdated 2>/dev/null || echo "")"
     if [[ -z "$mas_updates" ]]; then
         log "info" "No updates found for Mac App Store apps."
     else
         log "info" "Mac App Store updates found. This may take several minutes..."
-        run_command "mas upgrade" "Updating Mac App Store apps" "info" "true"
+        # Use specialized function that filters output and handles errors gracefully
+        if ! run_mas_upgrade "Updating Mac App Store apps" 600; then
+            log "warn" "Mac App Store update encountered issues, but continuing with maintenance"
+        fi
     fi
 else
     log "warn" "MAS (Mac App Store CLI) is not installed."
