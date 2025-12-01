@@ -1,1971 +1,344 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 #
-#-------------------------------------------------------------------------------
-# System Maintenance Script
-#-------------------------------------------------------------------------------
+# macos_maintenance.sh
 #
-# This script performs routine maintenance tasks on macOS, including:
-#   1. Encrypted system backup using Restic
-#   2. Removing user-level caches
-#   3. Deleting log files older than 7 days (system & user logs)
-#   4. Updating Homebrew and cleaning up old formula versions
-#   5. Updating Mac App Store apps
-#   6. Applying system software updates
-#   7. Running common system maintenance tasks
-#   8. Reindexing Spotlight
-#   9. Running First Aid on mounted volumes
-#   10. Purging memory cache
-#   11. Rebuilding Launch Services
-#   12. Optionally rebuilding the kernel cache (if needed)
-#   13. Removing stale /private/var/folders/* contents
+# Purpose: Safe, conservative macOS maintenance helper intended for scheduled
+# or on-demand use. Focuses on light-weight cleanup, health checks, and
+# optional software updates without destructive data loss.
 #
-# Requirements:
-#   - macOS with zsh
-#   - Homebrew for package management
-#   - Restic for encrypted backups
-#   - Sudo privileges for certain system commands
+# Scope:
+# - User-level cache/log cleanup in well-defined locations
+# - Optional Homebrew and App Store updates
+# - Optional macOS software update check (apply only when requested)
+# - Basic diagnostics for disk usage and Time Machine status
 #
-# Author: Jordie Belle
-# Updated: 2025-09-17
-# License: MIT
-#-------------------------------------------------------------------------------
-
-# Parse command line arguments
-VERBOSE=false
-TURBO_MODE=false
-PARALLEL_JOBS=4
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -v|--verbose)
-            VERBOSE=true
-            shift
-            ;;
-        -t|--turbo)
-            TURBO_MODE=true
-            shift
-            ;;
-        -j|--jobs)
-            if ! validate_number "$2" 1 $MAX_PARALLEL_JOBS "parallel jobs"; then
-                echo "Error: Invalid number of parallel jobs. Must be between 1 and $MAX_PARALLEL_JOBS"
-                exit 1
-            fi
-            PARALLEL_JOBS="$2"
-            shift 2
-            ;;
-        --help)
-            echo "Help will be shown after initialization..."
-            SHOW_HELP=true
-            shift
-            ;;
-        *)
-            echo "Unknown option: $1"
-            echo "Use --help for usage information"
-            exit 1
-            ;;
-    esac
-done
-
-# Function to optimize system performance for maintenance
-optimize_system_performance() {
-    if [[ "$TURBO_MODE" == true ]]; then
-        log "info" "🚀 TURBO MODE ENABLED - Optimizing system for maximum performance"
-        
-        # Increase process priority
-        renice -n -10 $$ 2>/dev/null || log "warn" "Could not increase process priority"
-        
-        # Optimize I/O scheduler for maintenance tasks
-        if command -v iostat &>/dev/null; then
-            log "debug" "Optimizing I/O performance"
-        fi
-        
-        # Set optimal CPU governor (if available)
-        if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
-            echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true
-        fi
-        
-        # Increase file descriptor limits
-        ulimit -n 65536 2>/dev/null || log "warn" "Could not increase file descriptor limit"
-        
-        # Optimize memory allocation
-        ulimit -v unlimited 2>/dev/null || log "warn" "Could not optimize memory allocation"
-        
-        log "info" "System optimized for maximum maintenance performance"
-    fi
-}
-
-# Function to restore system performance settings
-restore_system_performance() {
-    if [[ "$TURBO_MODE" == true ]]; then
-        log "info" "Restoring normal system performance settings"
-        
-        # Restore normal process priority
-        renice -n 0 $$ 2>/dev/null || true
-        
-        # Restore normal CPU governor
-        if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
-            echo ondemand > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true
-        fi
-        
-        log "info" "System performance settings restored"
-    fi
-}
-
-# Function to run commands in parallel
-run_parallel_commands() {
-    local commands=("$@")
-    local pids=()
-    local results=()
-    
-    if [[ "$TURBO_MODE" == true && ${#commands[@]} -gt 1 ]]; then
-        log "info" "Running ${#commands[@]} commands in parallel (max $PARALLEL_JOBS jobs)"
-        
-        for cmd in "${commands[@]}"; do
-            # Wait if we've reached the job limit
-            while [[ ${#pids[@]} -ge $PARALLEL_JOBS ]]; do
-                for i in "${!pids[@]}"; do
-                    if ! kill -0 "${pids[$i]}" 2>/dev/null; then
-                        wait "${pids[$i]}"
-                        results+=($?)
-                        unset pids[$i]
-                    fi
-                done
-                sleep 0.1
-            done
-            
-            # Start new command
-            eval "$cmd" &
-            pids+=($!)
-        done
-        
-        # Wait for all remaining jobs
-        for pid in "${pids[@]}"; do
-            wait "$pid"
-            results+=($?)
-        done
-        
-        # Check results
-        for result in "${results[@]}"; do
-            if [[ $result -ne 0 ]]; then
-                log "error" "One or more parallel commands failed"
-                return 1
-            fi
-        done
-        
-        log "info" "All parallel commands completed successfully"
-    else
-        # Run commands sequentially
-        for cmd in "${commands[@]}"; do
-            eval "$cmd"
-        done
-    fi
-}
-
-# Function to show progress indicator for long-running commands
-show_progress() {
-    local pid=$1
-    local message="$2"
-    local spinner="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    local i=0
-    
-    while kill -0 $pid 2>/dev/null; do
-        printf "\r[%c] %s" "${spinner:$i:1}" "$message"
-        i=$(( (i+1) % 10 ))
-        sleep 0.1
-    done
-    printf "\r[✓] %s\n" "$message"
-}
-
-# Function to run commands with advanced error handling and retry logic
-run_command() {
-    local cmd="$1"
-    local description="$2"
-    local log_level="${3:-info}"
-    local show_progress="${4:-false}"
-    local max_retries="${5:-1}"
-    local retry_delay="${6:-5}"
-    
-    local attempt=1
-    local success=false
-    local last_error=""
-    
-    while [[ $attempt -le $max_retries && $success == false ]]; do
-        if [[ $attempt -gt 1 ]]; then
-            log "warn" "Retry attempt $attempt/$max_retries for: $description"
-            sleep $retry_delay
-            # Exponential backoff
-            retry_delay=$((retry_delay * 2))
-        fi
-        
-        if [[ "$VERBOSE" == true ]]; then
-            log "$log_level" "Running: $description (attempt $attempt/$max_retries)"
-            if eval "$cmd" 2> >(tee -a /tmp/maintenance_error.log >&2); then
-                success=true
-            else
-                last_error=$(cat /tmp/maintenance_error.log 2>/dev/null || echo "Unknown error")
-            fi
-        else
-            log "$log_level" "Running: $description (attempt $attempt/$max_retries)"
-            if [[ "$show_progress" == true ]]; then
-                if eval "$cmd" > /dev/null 2> >(tee -a /tmp/maintenance_error.log >&2) &
-                then
-                    local cmd_pid=$!
-                    show_progress $cmd_pid "$description"
-                    wait $cmd_pid
-                    if [[ $? -eq 0 ]]; then
-                        success=true
-                    else
-                        last_error=$(cat /tmp/maintenance_error.log 2>/dev/null || echo "Unknown error")
-                    fi
-                else
-                    last_error=$(cat /tmp/maintenance_error.log 2>/dev/null || echo "Unknown error")
-                fi
-            else
-                if eval "$cmd" > /dev/null 2> >(tee -a /tmp/maintenance_error.log >&2); then
-                    success=true
-                else
-                    last_error=$(cat /tmp/maintenance_error.log 2>/dev/null || echo "Unknown error")
-                fi
-            fi
-        fi
-        
-        ((attempt++))
-    done
-    
-    if [[ $success == false ]]; then
-        log "error" "Failed after $max_retries attempts: $description"
-        log "error" "Last error: $last_error"
-        provide_error_suggestions "$description" "$last_error"
-        return 1
-    fi
-    
-    # Clean up error log on success
-    rm -f /tmp/maintenance_error.log
-    return 0
-}
-
-# Function to provide error suggestions and troubleshooting tips
-provide_error_suggestions() {
-    local operation="$1"
-    local error="$2"
-    
-    case "$operation" in
-        *"backup"*)
-            log "info" "💡 Backup troubleshooting suggestions:"
-            log "info" "   - Check available disk space"
-            log "info" "   - Verify network connectivity (for remote backups)"
-            log "info" "   - Ensure backup destination is writable"
-            ;;
-        *"update"*)
-            log "info" "💡 Update troubleshooting suggestions:"
-            log "info" "   - Check internet connectivity"
-            log "info" "   - Verify system time is correct"
-            log "info" "   - Try running updates manually"
-            ;;
-        *"cleanup"*)
-            log "info" "💡 Cleanup troubleshooting suggestions:"
-            log "info" "   - Check file permissions"
-            log "info" "   - Ensure files are not in use"
-            log "info" "   - Try running with sudo if needed"
-            ;;
-        *)
-            log "info" "💡 General troubleshooting suggestions:"
-            log "info" "   - Check system resources (disk space, memory)"
-            log "info" "   - Verify network connectivity"
-            log "info" "   - Check file permissions"
-            ;;
-    esac
-}
-
-# Function to run mas upgrade with output filtering and error handling
-run_mas_upgrade() {
-    local description="$1"
-    local timeout_seconds="${2:-600}"  # Default 10 minutes timeout
-    
-    log "info" "Running: $description"
-    
-    # Create a temporary file for filtering output
-    local temp_output=$(mktemp)
-    local temp_error=$(mktemp)
-    local exit_code=0
-    local timeout_cmd=""
-    
-    # Check for timeout command (may be 'timeout' or 'gtimeout' on macOS with coreutils)
-    if command -v timeout &>/dev/null; then
-        timeout_cmd="timeout"
-    elif command -v gtimeout &>/dev/null; then
-        timeout_cmd="gtimeout"
-    fi
-    
-    # Run mas upgrade with timeout (if available), filtering spinner and ANSI escape sequences
-    # Suppress spinner output by filtering lines containing spinner pattern and animation
-    if [[ -n "$timeout_cmd" ]]; then
-        # Use timeout command if available
-        # Filter spinner lines and ANSI codes, redirect filtered output
-        # Run mas upgrade with stderr redirected to temp file, filter stdout
-        $timeout_cmd "$timeout_seconds" mas upgrade > >( \
-            grep -v -E '^\s*\[.*\]\s*Updating Mac App Store apps' | \
-            grep -v -E 'Updating Mac App Store apps' | \
-            sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | \
-            sed 's/\x1b\[K//g' | \
-            sed '/^\s*$/d' > "$temp_output" 2>/dev/null) 2>"$temp_error"
-        exit_code=$?
-    else
-        # Fallback: run without timeout but filter output aggressively
-        log "debug" "timeout command not available, running without timeout protection"
-        mas upgrade > >( \
-            grep -v -E '^\s*\[.*\]\s*Updating Mac App Store apps' | \
-            grep -v -E 'Updating Mac App Store apps' | \
-            sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | \
-            sed 's/\x1b\[K//g' | \
-            sed '/^\s*$/d' > "$temp_output" 2>/dev/null) 2>"$temp_error"
-        exit_code=$?
-    fi
-    
-    # Check for known benign errors (error code -128 from Mac App Store API)
-    local error_output=$(cat "$temp_error" 2>/dev/null || echo "")
-    local has_benign_error=false
-    
-    if echo "$error_output" | grep -q "Error Domain=ISErrorDomain Code=-128"; then
-        has_benign_error=true
-        log "warn" "Mac App Store API returned error code -128 (known benign error, update may have succeeded)"
-    fi
-    
-    # Check if there are actual updates that were applied
-    if [[ $exit_code -eq 0 ]] || [[ "$has_benign_error" == true ]]; then
-        # Check if any meaningful output was produced (indicating updates)
-        if [[ -s "$temp_output" ]]; then
-            local filtered_output=$(cat "$temp_output" | grep -v -E '^\s*$' | head -20)
-            if [[ -n "$filtered_output" ]]; then
-                log "info" "Mac App Store updates processed"
-                if [[ "$VERBOSE" == true ]]; then
-                    echo "$filtered_output" | while IFS= read -r line; do
-                        [[ -n "$line" ]] && log "debug" "$line"
-                    done
-                fi
-            fi
-        fi
-        
-        if [[ "$has_benign_error" == true ]]; then
-            log "info" "Mac App Store updates completed (with benign API warning)"
-            rm -f "$temp_output" "$temp_error"
-            return 0
-        else
-            log "info" "Mac App Store updates completed successfully"
-            rm -f "$temp_output" "$temp_error"
-            return 0
-        fi
-    else
-        # Check if command timed out (exit code 124 for timeout command)
-        if [[ -n "$timeout_cmd" ]] && [[ $exit_code -eq 124 ]]; then
-            log "error" "Mac App Store update timed out after ${timeout_seconds}s"
-            rm -f "$temp_output" "$temp_error"
-            return 1
-        elif [[ $exit_code -ne 0 ]] && [[ "$has_benign_error" != true ]]; then
-            # Log actual errors (excluding benign ones)
-            if [[ -n "$error_output" ]] && ! echo "$error_output" | grep -q "Error Domain=ISErrorDomain Code=-128"; then
-                log "error" "Mac App Store update failed with error:"
-                echo "$error_output" | while IFS= read -r line; do
-                    [[ -n "$line" ]] && log "error" "  $line"
-                done
-            fi
-            rm -f "$temp_output" "$temp_error"
-            return 1
-        fi
-    fi
-}
-
-# Keep sudo alive function (will be started later if needed)
-keep_sudo_alive() {
-    while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
-}
-
-# Exit on error, unset variable usage, or failed pipeline
+# Safety principles:
+# - Never delete user documents or application data directories
+# - Never touch system-protected paths (/System, /Library, /usr)
+# - Avoid blanket deletion of /private/var/folders or cross-home removes
+# - All opt-in destructive actions support --dry-run and are off by default
+#
+# Supported macOS versions: macOS 12 Monterey and later
+# Privileges: Some operations (softwareupdate) require sudo/admin rights
+# Example:
+#   ./macos_maintenance.sh --cleanup --brew --dry-run
+#   ./macos_maintenance.sh --cleanup --apply-os-updates
+#   ./macos_maintenance.sh --diagnostics
+#
+# Change history:
+#   2024-06-05: Initial safe rewrite with flag-driven tasks and dry-run support
+#
 set -euo pipefail
-
-# Script constants
-readonly SCRIPT_VERSION="1.1.0"
-readonly SCRIPT_NAME=$(basename "$0")
-readonly SCRIPT_START_TIME=$(date +%s)
-readonly TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-readonly LOG_DATE_FORMAT="+%a %b %d %T %Z %Y"
-readonly MAX_RETRIES=3
-# Removed LOCK_TIMEOUT - no longer using lock files
-readonly BACKUP_TIMEOUT=3600  # 1 hour for backups
-# Create timestamped log file for this run
-readonly LOGFILE="$HOME/maintenance_${TIMESTAMP}.log"
-readonly LOGFILE_CURRENT="$HOME/maintenance.log"
-# Removed LOCKFILE - no longer using lock files
-
-# Security and validation constants
-readonly MAX_PATH_LENGTH=4096
-readonly ALLOWED_CHARS='[a-zA-Z0-9._/-]'
-readonly MIN_DISK_SPACE_GB=5
-readonly MAX_PARALLEL_JOBS=16
-
-# Configuration file path
-readonly CONFIG_FILE="$(dirname "$0")/maintenance.conf"
+IFS=$'\n\t'
 
 ###############################################################################
-# Configuration Management
+# Logging helpers
 ###############################################################################
 
-# Function to load configuration from file
-load_config() {
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # Source the configuration file safely
-        if ! source "$CONFIG_FILE" 2>/dev/null; then
-            echo "WARNING: Failed to load configuration file, using defaults"
-            return 1
-        fi
-        
+LOG_LEVEL=${LOG_LEVEL:-info}
+DRY_RUN=false
+VERBOSE=false
+
+log() {
+    local level="$1"; shift
+    local message="$*"
+    local levels=(error warn info debug)
+    local current_index=0
+    local level_index=-1
+
+    for idx in "${!levels[@]}"; do
+        [[ ${levels[$idx]} == "$LOG_LEVEL" ]] && current_index=$idx
+        [[ ${levels[$idx]} == "$level" ]] && level_index=$idx
+    done
+
+    if (( level_index <= current_index )); then
+        local timestamp
+        timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+        printf '%s [%5s] %s\n' "$timestamp" "$level" "$message" >&2
+    fi
+}
+
+log_debug() { log debug "$@"; }
+log_info() { log info "$@"; }
+log_warn() { log warn "$@"; }
+log_error() { log error "$@"; }
+
+run_cmd() {
+    local description="$1"; shift
+    if $DRY_RUN; then
+        log_info "(dry-run) $description"
         return 0
-    else
-        return 1
     fi
-}
-
-# Function to validate configuration values
-validate_config() {
-    # Validate numeric configuration values
-    if [[ -n "${PARALLEL_JOBS_DEFAULT:-}" ]]; then
-        if ! validate_number "$PARALLEL_JOBS_DEFAULT" 1 $MAX_PARALLEL_JOBS "default parallel jobs"; then
-            echo "WARNING: Invalid PARALLEL_JOBS_DEFAULT in config, using default: 4"
-            PARALLEL_JOBS_DEFAULT=4
-        fi
-    fi
-    
-    if [[ -n "${MIN_DISK_SPACE_GB:-}" ]]; then
-        if ! validate_number "$MIN_DISK_SPACE_GB" 1 100 "minimum disk space"; then
-            echo "WARNING: Invalid MIN_DISK_SPACE_GB in config, using default: 5"
-            MIN_DISK_SPACE_GB=5
-        fi
-    fi
+    log_info "$description"
+    "$@"
 }
 
 ###############################################################################
-# Security and Input Validation Functions
+# Utility helpers
 ###############################################################################
 
-# Function to validate and sanitize file paths
-validate_path() {
-    local path="$1"
-    local description="$2"
-    
-    # Check if path is empty
-    if [[ -z "$path" ]]; then
-        echo "ERROR: Empty path provided for $description"
-        return 1
+ensure_macos() {
+    if [[ $(uname -s) != "Darwin" ]]; then
+        log_error "This script is intended for macOS only."
+        exit 1
     fi
-    
-    # Check path length
-    if [[ ${#path} -gt $MAX_PATH_LENGTH ]]; then
-        echo "ERROR: Path too long for $description: ${#path} characters (max: $MAX_PATH_LENGTH)"
-        return 1
-    fi
-    
-    # Check for dangerous characters (basic validation)
-    if [[ "$path" =~ [^a-zA-Z0-9._/-] ]]; then
-        echo "ERROR: Invalid characters in path for $description: $path"
-        return 1
-    fi
-    
-    # Check for path traversal attempts (look for ../ or ..\ patterns)
-    if [[ "$path" =~ /\.\./ ]] || [[ "$path" =~ /\.\.\\\\ ]] || [[ "$path" =~ ^\.\./ ]] || [[ "$path" =~ ^\.\.\\\\ ]]; then
-        echo "ERROR: Path traversal attempt detected in $description: $path"
-        return 1
-    fi
-    
-    return 0
 }
 
-# Function to validate numeric input
-validate_number() {
-    local value="$1"
-    local min="$2"
-    local max="$3"
-    local description="$4"
-    
-    # Check if it's a number
-    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-        echo "ERROR: Invalid number for $description: $value"
-        return 1
-    fi
-    
-    # Check bounds
-    if [[ $value -lt $min ]] || [[ $value -gt $max ]]; then
-        echo "ERROR: Number out of range for $description: $value (min: $min, max: $max)"
-        return 1
-    fi
-    
-    return 0
+check_binary() {
+    local bin="$1"
+    command -v "$bin" >/dev/null 2>&1
 }
 
-# Function to safely create directories
-safe_mkdir() {
-    local dir_path="$1"
-    local description="$2"
-    
-    if ! validate_path "$dir_path" "$description"; then
-        return 1
-    fi
-    
-    if ! mkdir -p "$dir_path" 2>/dev/null; then
-        echo "ERROR: Failed to create directory for $description: $dir_path"
-        return 1
-    fi
-    
-    return 0
-}
+###############################################################################
+# Cleanup routines (safe by default)
+###############################################################################
 
-# Function to safely remove files with validation
-safe_remove() {
+protected_cache_patterns=(
+    "${HOME}/Library/Caches/*Firefox*"
+    "${HOME}/Library/Caches/*Mozilla*"
+    "${HOME}/Library/Caches/*Obsidian*"
+    "${HOME}/Library/Caches/*GitHub*"
+    "${HOME}/Library/Caches/restic"
+)
+
+should_skip_path() {
     local target="$1"
-    local description="$2"
-    local force="${3:-false}"
-    
-    if ! validate_path "$target" "$description"; then
-        return 1
-    fi
-    
-    # Additional safety checks for destructive operations
-    if [[ "$force" != "true" ]]; then
-        # Check if target is in a safe location
-        if [[ "$target" =~ ^/etc/ ]] || [[ "$target" =~ ^/System/ ]] || [[ "$target" =~ ^/usr/bin/ ]]; then
-            echo "ERROR: Refusing to remove system file: $target"
-            return 1
+    for pattern in "${protected_cache_patterns[@]}"; do
+        if [[ "$target" == $pattern ]]; then
+            return 0
         fi
-    fi
-    
-    return 0
+    done
+    return 1
 }
 
-# Function to monitor system resources
-monitor_resources() {
-    local operation="$1"
-    
-    # Check available memory
-    local available_memory
-    available_memory=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\.//')
-    available_memory=$((available_memory * 4096 / 1024 / 1024))  # Convert to MB
-    
-    # Set global memory state for script behavior adjustments
-    export LOW_MEMORY_MODE=false
-    export CRITICAL_MEMORY_MODE=false
-    
-    if [[ $available_memory -lt 512 ]]; then
-        log "warn" "Low memory warning: ${available_memory}MB available during $operation"
-        export LOW_MEMORY_MODE=true
-        
-        # Adjust behavior for low memory
-        if [[ "$TURBO_MODE" == true ]]; then
-            log "info" "Reducing parallelism due to low memory"
-            PARALLEL_JOBS=$((PARALLEL_JOBS / 2))
-            if [[ $PARALLEL_JOBS -lt 1 ]]; then
-                PARALLEL_JOBS=1
-            fi
+cleanup_user_caches() {
+    local cache_root="$HOME/Library/Caches"
+    [[ -d "$cache_root" ]] || { log_info "Cache root $cache_root not found; skipping."; return 0; }
+
+    log_info "Cleaning user caches (preserving browser/Obsidian/GitHub auth caches)."
+    local removed=0
+    while IFS= read -r -d '' item; do
+        if should_skip_path "$item"; then
+            log_debug "Skipping protected cache: $item"
+            continue
         fi
-    fi
-    
-    if [[ $available_memory -lt 256 ]]; then
-        log "warn" "Critical memory warning: ${available_memory}MB available during $operation"
-        export CRITICAL_MEMORY_MODE=true
-        
-        # Disable turbo mode and reduce parallelism for critical memory
-        if [[ "$TURBO_MODE" == true ]]; then
-            log "info" "Disabling turbo mode due to critical memory conditions"
-            TURBO_MODE=false
-            PARALLEL_JOBS=1
-        fi
-        
-        # Provide actionable recommendations
-        log "info" "💡 Recommendations for low memory:"
-        log "info" "   - Close unnecessary applications"
-        log "info" "   - Consider running maintenance during off-peak hours"
-        log "info" "   - Some non-critical maintenance tasks may be skipped"
-        log "info" "   - Monitor system activity with Activity Monitor"
-    fi
-    
-    # Check CPU load
-    local cpu_load
-    if [[ "$(uname)" == "Darwin" ]]; then
-        # macOS uptime format
-        cpu_load=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//')
-    else
-        # Linux uptime format
-        cpu_load=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//')
-    fi
-    
-    # Only check if we got a valid CPU load value
-    if [[ -n "$cpu_load" && "$cpu_load" != "" ]]; then
-        # Use awk for floating point comparison instead of bc
-        if [[ $(echo "$cpu_load 4.0" | awk '{print ($1 > $2)}') == "1" ]]; then
-            log "warn" "High CPU load detected: $cpu_load during $operation"
-        fi
-    fi
-    
-    # Check disk space
-    local disk_usage
-    disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
-    if [[ $disk_usage -gt 90 ]]; then
-        log "warn" "Critical disk space: ${disk_usage}% used during $operation"
-    fi
+        run_cmd "Removing cache item: $item" rm -rf "$item"
+        ((removed++)) || true
+    done < <(find "$cache_root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+    log_info "Cache cleanup complete (processed $removed entries)."
 }
 
-# Function to cleanup temporary files and resources
-cleanup_resources() {
-    log "debug" "Cleaning up temporary resources..."
-    
-    # Remove temporary error logs
-    rm -f /tmp/maintenance_error.log
-    
-    # Clean up any temporary directories created during testing
-    find /tmp -name "maintenance_test_*" -type d -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-    
-    # Lock file cleanup removed - no longer using lock files
-    
-    # Clean up old maintenance log files (keep last 10 runs)
-    find "$HOME" -name "maintenance_*.log" -type f -mtime +7 -delete 2>/dev/null || true
-    
-    # Keep only the 10 most recent log files
-    find "$HOME" -name "maintenance_*.log" -type f -exec ls -t {} + 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
-    
-    log "debug" "Resource cleanup completed"
+cleanup_logs() {
+    local log_root="$HOME/Library/Logs"
+    [[ -d "$log_root" ]] || { log_info "No user logs to prune."; return 0; }
+    run_cmd "Deleting user logs older than 30 days under $log_root" \
+        find "$log_root" -type f -mtime +30 -print -delete
+}
+
+cleanup_tmpdir() {
+    local tmp_root="${TMPDIR:-/tmp}"
+    [[ -d "$tmp_root" ]] || { log_info "TMPDIR $tmp_root not found; skipping."; return 0; }
+    run_cmd "Cleaning temporary files in $tmp_root" find "$tmp_root" -mindepth 1 -maxdepth 2 -type f -mtime +7 -print -delete
+}
+
+cleanup_downloads=false
+cleanup_downloads_days=30
+cleanup=false
+diagnostics=false
+cleanup_downloads_run() {
+    local downloads_dir="$HOME/Downloads"
+    [[ -d "$downloads_dir" ]] || { log_info "Downloads directory not found; skipping."; return 0; }
+    run_cmd "Removing files older than ${cleanup_downloads_days}d in $downloads_dir" \
+        find "$downloads_dir" -type f -mtime +"$cleanup_downloads_days" -print -delete
 }
 
 ###############################################################################
-# Lock File Management - REMOVED
-# No longer using lock files to prevent conflicts
-
-# Enhanced signal handling for better cancellation
-cleanup_and_exit() {
-    local signal="$1"
-    log "warn" "Received signal $signal - cleaning up and exiting..."
-    
-    # Clean up any active backup processes
-    if [[ -n "${BACKUP_PID:-}" ]]; then
-        log "info" "Terminating backup process..."
-        kill -TERM "$BACKUP_PID" 2>/dev/null || true
-        sleep 2
-        kill -KILL "$BACKUP_PID" 2>/dev/null || true
-    fi
-    
-    # Clean up backup temporary directories
-    if [[ -n "${BACKUP_TEMP_DIR:-}" ]]; then
-        log "info" "Cleaning up backup temporary directories..."
-        rm -rf "$BACKUP_TEMP_DIR/.rsync-partial" 2>/dev/null || true
-        rm -rf "$BACKUP_TEMP_DIR/.rsync-temp" 2>/dev/null || true
-    fi
-    
-    # Restore system performance settings
-    restore_system_performance 2>/dev/null || true
-    
-    # Clean up temporary files
-    cleanup_resources 2>/dev/null || true
-    
-    log "info" "Cleanup completed. Exiting gracefully."
-    exit 130  # Standard exit code for SIGINT (Ctrl+C)
-}
-
-# Global timeout mechanism to prevent hanging
-SCRIPT_TIMEOUT=3600  # 1 hour maximum runtime
-start_time=$(date +%s)
-
-check_timeout() {
-    local current_time=$(date +%s)
-    local elapsed=$((current_time - start_time))
-    
-    if [[ $elapsed -gt $SCRIPT_TIMEOUT ]]; then
-        log "error" "Script timeout reached (${SCRIPT_TIMEOUT}s) - forcing exit"
-        cleanup_and_exit "TIMEOUT"
-    fi
-}
-
-# Set up enhanced trap handling
-trap 'cleanup_and_exit INT' INT
-trap 'cleanup_and_exit TERM' TERM
-trap 'cleanup_resources' EXIT
-
-###############################################################################
-# Help Functions
+# Update routines
 ###############################################################################
 
-show_usage() {
-    cat << EOF
+brew_update=false
+mas_update=false
+os_update_check=false
+os_update_apply=false
 
-macOS System Maintenance Script
-=============================
+run_brew_updates() {
+    if ! check_binary brew; then
+        log_warn "Homebrew not installed; skipping brew updates."
+        return 0
+    fi
+    run_cmd "Updating Homebrew metadata" brew update
+    run_cmd "Upgrading installed Homebrew packages" brew upgrade
+    run_cmd "Cleaning old Homebrew artifacts" brew cleanup
+}
 
-This script automates various system maintenance tasks including backups,
-updates, and cleanup operations.
+run_mas_updates() {
+    if ! check_binary mas; then
+        log_warn "mas CLI not installed; skipping App Store updates."
+        return 0
+    fi
+    run_cmd "Checking Mac App Store updates" mas upgrade
+}
 
-Usage:
-------
-maintain [OPTIONS]
+run_os_updates() {
+    local args=(--list)
+    if $os_update_apply; then
+        args=(--install --all)
+    fi
+    if $DRY_RUN; then
+        log_info "(dry-run) softwareupdate ${args[*]}"
+        return 0
+    fi
+    if [[ $EUID -ne 0 ]]; then
+        log_warn "softwareupdate typically requires sudo; attempting with sudo."
+    fi
+    run_cmd "Running softwareupdate ${args[*]}" sudo softwareupdate "${args[@]}"
+}
+
+###############################################################################
+# Diagnostics
+###############################################################################
+
+run_diagnostics() {
+    log_info "Disk usage snapshot:"
+    df -h / || true
+
+    if check_binary tmutil; then
+        log_info "Time Machine status:"
+        tmutil status || true
+    fi
+
+    log_info "Recent system events (last 20 shutdown causes):"
+    log show --predicate 'eventMessage CONTAINS "Previous shutdown cause"' --last 1d --info --debug | tail -n 20 || true
+}
+
+###############################################################################
+# Usage
+###############################################################################
+
+print_help() {
+    cat <<'USAGE'
+macos_maintenance.sh - safe macOS maintenance
+
+Usage: macos_maintenance.sh [options]
 
 Options:
-  -v, --verbose     Enable verbose output
-  -t, --turbo       Enable turbo mode for maximum performance
-  -j, --jobs N      Set number of parallel jobs (default: 4, turbo mode only)
-  --help            Show this help message
+  --cleanup                 Run safe cache/log/tmp cleanup
+  --cleanup-downloads DAYS  Remove files older than DAYS in ~/Downloads (off by default)
+  --brew                    Run Homebrew update/upgrade/cleanup
+  --mas                     Run Mac App Store updates (mas upgrade)
+  --check-os-updates        Check available macOS updates
+  --apply-os-updates        Apply macOS updates (uses sudo; implies check)
+  --diagnostics             Print diagnostic info (disk, Time Machine)
+  --dry-run                 Show actions without making changes
+  --verbose                 Enable verbose logging
+  --help                    Show this help text
 
-Examples:
-  maintain                    # Normal maintenance
-  maintain --verbose          # Verbose output
-  maintain --turbo            # Maximum performance mode
-  maintain --turbo --jobs 8   # Turbo mode with 8 parallel jobs
-
-Turbo Mode Features:
-  🚀 Higher process priority
-  ⚡ Parallel execution of compatible tasks
-  🔧 Optimized system resource allocation
-  📈 Maximum performance for unattended operation
-
-The script will:
-1. Create encrypted system backup using Restic
-2. Remove user-level caches and browser data
-3. Delete old log files
-4. Update Homebrew and cleanup
-5. Update Mac App Store apps
-6. Apply system updates
-7. Run system health checks
-8. Run system maintenance tasks
-9. Reindex Spotlight
-10. Run First Aid on volumes
-11. Purge memory cache
-12. Rebuild Launch Services
-13. Rebuild kernel cache if needed
-14. Clean up temporary files
-
-Note: You will be prompted for your password when needed.
-
-EOF
+Default behavior: none. Select the tasks you want to run.
+USAGE
 }
 
 ###############################################################################
-# Logging Functions
+# Argument parsing
 ###############################################################################
 
-# Function to format text to fit within a specific width
-format_text() {
-    local text="$1"
-    local width="${2:-80}"  # Default width of 80 characters (increased from 64)
-    printf "%-*.*s" "$width" "$width" "$text"
-}
-
-# Enhanced logging function that logs to both console and file
-log() {
-    local level="$1"
-    local message="$2"
-    local timestamp
-    timestamp=$(date "$LOG_DATE_FORMAT")
-    
-    # Color codes for different log levels
-    local color_reset="\033[0m"
-    local color_info="\033[32m"    # Green
-    local color_warn="\033[33m"    # Yellow
-    local color_error="\033[31m"   # Red
-    local color_debug="\033[36m"   # Cyan
-    
-    # Set color based on log level
-    local color=""
-    case "$level" in
-        "info")  color="$color_info" ;;
-        "warn")  color="$color_warn" ;;
-        "error") color="$color_error" ;;
-        "debug") color="$color_debug" ;;
-        *)       color="" ;;
-    esac
-    
-    # Format the message with proper width
-    local formatted_msg
-    formatted_msg="$(printf "[%-5s] %s - %s" "$level" "$timestamp" "$message")"
-    
-    # Log to system logger
-    logger -p "user.$level" "$message"
-    
-    # Log to console with colors and file without colors
-    if [[ -t 1 ]]; then
-        printf "${color}%s${color_reset}\n" "$formatted_msg"
-    else
-        printf "%s\n" "$formatted_msg"
-    fi
-}
-
-# Function to log section boundaries
-log_section_boundary() {
-    local boundary_type="$1"
-    local timestamp
-    timestamp=$(date "$LOG_DATE_FORMAT")
-    local width=64
-    local line
-    printf -v line "%${width}s" "" && printf "%s\n" "${line// /#}"
-    
-    case "$boundary_type" in
-        "start")
-            printf "\n"
-            printf "#%s#\n" "$(format_text "")"
-            printf "#%s#\n" "$(format_text "                 MAINTENANCE RUN START")"
-            printf "#%s#\n" "$(format_text " Version: $SCRIPT_VERSION")"
-            printf "#%s#\n" "$(format_text " Date: $timestamp")"
-            printf "#%s#\n" "$(format_text "")"
-            printf "%s\n\n" "$line"
-            ;;
-        "end")
-            printf "\n"
-            printf "#%s#\n" "$(format_text "")"
-            printf "#%s#\n" "$(format_text "                  MAINTENANCE RUN END")"
-            printf "#%s#\n" "$(format_text " Date: $timestamp")"
-            printf "#%s#\n" "$(format_text " Duration: ${TOTAL_DURATION}s")"
-            printf "#%s#\n" "$(format_text "")"
-            printf "%s\n\n" "$line"
-            ;;
-    esac
-}
-
-log_section_start() {
-    local section_name="$1"
-    local timestamp
-    timestamp=$(date "$LOG_DATE_FORMAT")
-    
-    local text="===== Starting $section_name at $timestamp ====="
-    local formatted_text
-    formatted_text="$(format_text "$text")"
-    
-    log "info" "$formatted_text"
-    
-    # Export section start time
-    export SECTION_START_TIME=$(date +%s)
-}
-
-log_section_end() {
-    local section_name="$1"
-    local timestamp
-    timestamp=$(date "$LOG_DATE_FORMAT")
-    
-    local section_end_time
-    section_end_time=$(date +%s)
-    
-    # Calculate duration
-    local duration
-    local start_time_var="${SECTION_START_TIME:-$section_end_time}"
-    duration=$((section_end_time - start_time_var))
-    
-    local text=">> Completed $section_name at $timestamp (Duration: ${duration}s)"
-    local formatted_text
-    formatted_text="$(format_text "$text")"
-    
-    log "info" "$formatted_text"
-    printf "\n"
-}
-
-# Ensure log directory exists
-if [[ ! -d "$(dirname "$LOGFILE")" ]]; then
-    mkdir -p "$(dirname "$LOGFILE")"
-fi
-
-# Log rotation: Archive previous log and start fresh
-if [[ -f "$LOGFILE_CURRENT" ]]; then
-    # Only archive if it's not already a timestamped file
-    if [[ "$(basename "$LOGFILE_CURRENT")" == "maintenance.log" ]]; then
-        # Create a simple timestamp for the archived log
-        local archive_timestamp=$(date +"%Y%m%d_%H%M%S")
-        local archived_log="$HOME/maintenance_${archive_timestamp}.log"
-        
-        mv "$LOGFILE_CURRENT" "$archived_log" 2>/dev/null || true
-        echo "Previous log archived as: $(basename "$archived_log")"
-    fi
-fi
-
-# Create symlink to current log for easy access
-ln -sf "$(basename "$LOGFILE")" "$LOGFILE_CURRENT" 2>/dev/null || true
-
-# Redirect all output to tee for logging (only if not already redirected)
-if [[ -t 1 ]]; then
-    exec 1> >(tee -a "$LOGFILE")
-fi
-if [[ -t 2 ]]; then
-    exec 2> >(tee -a "$LOGFILE" >&2)
-fi
-
-# Show usage information if help is requested
-if [[ "${SHOW_HELP:-false}" == "true" ]]; then
-    show_usage
+if [[ $# -eq 0 ]]; then
+    print_help
     exit 0
 fi
 
-# Cache sudo credentials now that we're past help
-echo "This script requires sudo privileges for system maintenance tasks."
-echo "You will be prompted for your password to cache sudo credentials."
-if ! sudo -v; then
-    echo "ERROR: Failed to obtain sudo privileges. Exiting."
-    exit 1
-fi
-echo "Sudo credentials cached successfully."
-
-# Start sudo keep-alive
-keep_sudo_alive
-
-# Load and validate configuration
-load_config || true  # Config file is optional
-validate_config || true  # Validation is optional
-
-# Lock file system removed - no longer preventing multiple runs
-
-# Initial resource monitoring
-monitor_resources "script startup"
-
-# Optimize system performance if turbo mode is enabled
-optimize_system_performance
-
-# Start the maintenance run
-log_section_boundary "start"
-log "info" "Starting maintenance tasks..."
-log "info" "Log file saved at: $LOGFILE"
-log "info" "Current log accessible via: $LOGFILE_CURRENT"
-if [[ "$TURBO_MODE" == true ]]; then
-    log "info" "🚀 Turbo mode enabled - Maximum performance optimization active"
-fi
-printf "\n"
-
-###############################################################################
-# Repository Management Functions
-###############################################################################
-
-# Function to check available disk space and clean up if needed
-check_disk_space() {
-    local backup_dir="$1"
-    local min_free_space=10  # Minimum free space in GB
-    local aggressive_cleanup_threshold=5  # GB
-    
-    # Get available space in GB
-    local available_space
-    if [[ "$(uname)" == "Darwin" ]]; then
-        available_space=$(df -h "$backup_dir" | awk 'NR==2 {gsub("G",""); print $4}')
-    else
-        available_space=$(df -BG "$backup_dir" | awk 'NR==2 {gsub("G",""); print $4}')
-    fi
-    
-    log "info" "Available space in backup directory: ${available_space}GB"
-    
-    if [[ $available_space -lt $min_free_space ]]; then
-        log "warning" "Low disk space detected (${available_space}GB free, minimum ${min_free_space}GB required)"
-        
-        if [[ $available_space -lt $aggressive_cleanup_threshold ]]; then
-            log "warning" "Critical disk space: performing aggressive cleanup"
-            
-            # First try to clean up old rsync backups (keep only last 2)
-            if [[ -d "$backup_dir" ]]; then
-                cleanup_old_rsync_backups "$backup_dir" 2
-            else
-                log "info" "No backup directory to clean up"
-            fi
-            
-            # Additional aggressive cleanup for critical space
-            log "info" "Performing additional aggressive cleanup..."
-            
-            # Clean up system caches
-            sudo rm -rf /var/folders/*/T/* 2>/dev/null || true
-            sudo rm -rf /tmp/* 2>/dev/null || true
-            
-            # Clean up user caches more aggressively
-            find ~/Library/Caches -type f -mtime +1 -delete 2>/dev/null || true
-            find ~/Library/Logs -type f -mtime +7 -delete 2>/dev/null || true
-            
-        else
-            log "info" "Performing standard cleanup"
-            if [[ -d "$backup_dir" ]]; then
-                # Clean up old rsync backups (keep last 5)
-                cleanup_old_rsync_backups "$backup_dir" 5
-            else
-                log "info" "No backup directory to clean up"
-            fi
-        fi
-        
-        # Check space again after cleanup
-        if [[ "$(uname)" == "Darwin" ]]; then
-            available_space=$(df -h "$backup_dir" | awk 'NR==2 {gsub("G",""); print $4}')
-        else
-            available_space=$(df -BG "$backup_dir" | awk 'NR==2 {gsub("G",""); print $4}')
-        fi
-        
-        if [[ $available_space -lt $aggressive_cleanup_threshold ]]; then
-            log "warn" "Still low on space after cleanup, attempting emergency recovery..."
-            emergency_disk_cleanup "$backup_dir"
-            
-            # Check space one more time
-            if [[ "$(uname)" == "Darwin" ]]; then
-                available_space=$(df -h "$backup_dir" | awk 'NR==2 {gsub("G",""); print $4}')
-            else
-                available_space=$(df -BG "$backup_dir" | awk 'NR==2 {gsub("G",""); print $4}')
-            fi
-            
-            if [[ $available_space -lt $aggressive_cleanup_threshold ]]; then
-                log "error" "Critical: Unable to free enough space even after emergency cleanup"
-                log "error" "Available space: ${available_space}GB, required: ${aggressive_cleanup_threshold}GB"
-                return 1
-            fi
-        fi
-    fi
-    
-    return 0
+is_positive_int() {
+    [[ "$1" =~ ^[0-9]+$ ]] && [[ "$1" -gt 0 ]]
 }
 
-# Emergency disk space recovery function
-emergency_disk_cleanup() {
-    local target_dir="$1"
-    log "warn" "EMERGENCY: Performing emergency disk space recovery..."
-    
-    # Clean up Restic cache aggressively
-    if command -v restic &>/dev/null; then
-        log "info" "Cleaning up Restic cache..."
-        restic cache --cleanup 2>/dev/null || true
-    fi
-    
-    # Clean up system temporary files
-    log "info" "Cleaning up system temporary files..."
-    sudo rm -rf /var/folders/*/T/* 2>/dev/null || true
-    sudo rm -rf /tmp/* 2>/dev/null || true
-    
-    # Clean up user caches aggressively
-    log "info" "Cleaning up user caches..."
-    find ~/Library/Caches -type f -mtime +0 -delete 2>/dev/null || true
-    find ~/Library/Logs -type f -mtime +3 -delete 2>/dev/null || true
-    
-    # Clean up Downloads folder (files older than 30 days)
-    log "info" "Cleaning up old downloads..."
-    find ~/Downloads -type f -mtime +30 -delete 2>/dev/null || true
-    
-    # Clean up Trash
-    log "info" "Emptying Trash..."
-    rm -rf ~/.Trash/* 2>/dev/null || true
-    
-    # Clean up old log files
-    log "info" "Cleaning up old log files..."
-    find ~ -name "*.log" -type f -mtime +7 -delete 2>/dev/null || true
-    
-    log "info" "Emergency cleanup completed"
-}
-
-
-# Chunked backup function for large datasets
-perform_chunked_backup() {
-    local source_dir="$1"
-    local backup_dir="$2"
-    local timestamp=$(date +"%Y%m%d_%H%M%S")
-    local backup_name="backup_${timestamp}"
-    local full_backup_path="$backup_dir/$backup_name"
-    
-    log "info" "Starting chunked backup to: $full_backup_path"
-    
-    # Check disk space before backup
-    if ! check_disk_space "$backup_dir"; then
-        log "error" "Insufficient disk space for backup"
-        return 1
-    fi
-    
-    # Create backup directory and temporary directories
-    if ! mkdir -p "$full_backup_path"; then
-        log "error" "Failed to create backup directory: $full_backup_path"
-        return 1
-    fi
-    
-    # Create temporary directories for rsync
-    mkdir -p "$full_backup_path/.rsync-partial"
-    mkdir -p "$full_backup_path/.rsync-temp"
-    
-    # Set global variables for cleanup on interruption
-    export BACKUP_TEMP_DIR="$full_backup_path"
-    
-    # Define backup chunks (directories to backup separately)
-    # Prioritize critical small files first, then larger directories
-    local critical_files=(
-        ".gitconfig"
-        ".zshrc"
-        ".bash_profile"
-        ".bashrc"
-    )
-    
-    local backup_chunks=(
-        "Documents"
-        "Library/Preferences"
-        "Library/LaunchAgents"
-        ".config"
-        ".ssh"
-        "Desktop"
-        "Downloads"
-    )
-    
-    # Handle Library/Application Support separately due to size
-    local large_directories=(
-        "Library/Application Support"
-    )
-    
-    # Handle projects directory separately with sub-chunking
-    local projects_chunks=()
-    if [[ -d "$source_dir/projects" ]]; then
-        log "info" "Analyzing projects directory for sub-chunking..."
-        # Get list of project directories
-        while IFS= read -r -d '' project_dir; do
-            local project_name=$(basename "$project_dir")
-            projects_chunks+=("projects/$project_name")
-        done < <(find "$source_dir/projects" -maxdepth 1 -type d -not -name "projects" -print0 2>/dev/null)
-        
-        log "info" "Found ${#projects_chunks[@]} project directories to backup separately"
-    fi
-    
-    local total_chunks=$((${#critical_files[@]} + ${#backup_chunks[@]} + ${#large_directories[@]} + ${#projects_chunks[@]}))
-    local successful_chunks=0
-    local failed_chunks=0
-    
-    log "info" "Backing up $total_chunks chunks separately for better reliability"
-    log "info" "  - ${#critical_files[@]} critical files"
-    log "info" "  - ${#backup_chunks[@]} regular directories" 
-    log "info" "  - ${#large_directories[@]} large directories"
-    log "info" "  - ${#projects_chunks[@]} project directories"
-    
-    # Record start time for ETA calculation
-    local backup_start_time=$(date +%s)
-    
-    # Function to calculate and display progress
-    show_backup_progress() {
-        local current_chunk=$1
-        local total_chunks=$2
-        local start_time=$3
-        
-        local current_time=$(date +%s)
-        local elapsed=$((current_time - start_time))
-        local progress_percent=$((current_chunk * 100 / total_chunks))
-        
-        if [[ $current_chunk -gt 0 ]]; then
-            local avg_time_per_chunk=$((elapsed / current_chunk))
-            local remaining_chunks=$((total_chunks - current_chunk))
-            local eta_seconds=$((remaining_chunks * avg_time_per_chunk))
-            local eta_minutes=$((eta_seconds / 60))
-            local eta_seconds_remainder=$((eta_seconds % 60))
-            
-            log "info" "Progress: $current_chunk/$total_chunks chunks (${progress_percent}%) - ETA: ${eta_minutes}m ${eta_seconds_remainder}s"
-        fi
-    }
-    
-    # Create comprehensive exclude file
-    local exclude_file=$(mktemp)
-    cat > "$exclude_file" << 'EOF'
-# rsync exclude patterns - optimized for performance
-*.tmp
-*.log
-*.cache
-*.swp
-*.swo
-*~
-.DS_Store
-.Trash
-.Trashes
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-node_modules
-.git
-*.pyc
-__pycache__
-*.o
-*.so
-*.dylib
-Library/Caches
-Library/Logs
-Library/Application Support/Google/Chrome/Default/Application Cache
-Library/Application Support/Google/Chrome/Default/Code Cache
-Library/Application Support/FileProvider
-Library/Group Containers/group.com.apple.CoreSpeech
-Library/Group Containers/group.com.apple.secure-control-center-preferences
-Library/Application Support/Steam/logs
-Library/Developer/Xcode/DerivedData
-Library/Application Support/MobileSync/Backup
-.vmware
-.parallels
-.colima
-.docker
-EOF
-    
-    # Backup critical files first (highest priority)
-    for critical_file in "${critical_files[@]}"; do
-        local file_path="$source_dir/$critical_file"
-        local backup_path="$full_backup_path/$critical_file"
-        
-        if [[ -e "$file_path" ]]; then
-            local current_chunk=$((successful_chunks + failed_chunks + 1))
-            log "info" "Backing up critical file: $critical_file ($current_chunk/$total_chunks)"
-            show_backup_progress $current_chunk $total_chunks $backup_start_time
-            
-            # Create backup directory
-            mkdir -p "$(dirname "$backup_path")"
-            
-            # Use simple cp for critical files (more reliable than rsync for single files)
-            if cp "$file_path" "$backup_path" 2>/dev/null; then
-                ((successful_chunks++))
-                log "info" "✅ Critical file '$critical_file' backed up successfully"
-            else
-                ((failed_chunks++))
-                log "warn" "⚠️ Critical file '$critical_file' failed to backup"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cleanup)
+            cleanup=true
+            ;;
+        --cleanup-downloads)
+            if [[ $# -lt 2 ]]; then
+                log_error "--cleanup-downloads requires a DAYS argument"
+                exit 1
             fi
-        else
-            log "info" "Skipping critical file '$critical_file' (not found)"
-        fi
-    done
-    
-    # Backup each chunk separately (regular chunks)
-    for chunk in "${backup_chunks[@]}"; do
-        local chunk_path="$source_dir/$chunk"
-        local chunk_backup_path="$full_backup_path/$chunk"
-        
-        if [[ -e "$chunk_path" ]]; then
-            local current_chunk=$((successful_chunks + failed_chunks + 1))
-            log "info" "Backing up chunk: $chunk ($current_chunk/$total_chunks)"
-            show_backup_progress $current_chunk $total_chunks $backup_start_time
-            
-            # Create chunk backup directory
-            mkdir -p "$(dirname "$chunk_backup_path")"
-            
-            # Use timeout to prevent hanging on individual chunks
-            if timeout 600 rsync -av --progress --exclude-from="$exclude_file" \
-                --delete-excluded \
-                --stats \
-                --timeout=60 \
-                --contimeout=10 \
-                --no-whole-file \
-                --partial \
-                --partial-dir="$full_backup_path/.rsync-partial" \
-                --temp-dir="$full_backup_path/.rsync-temp" \
-                --no-super \
-                --no-devices \
-                --no-specials \
-                --no-perms \
-                --no-owner \
-                --no-group \
-                --no-times \
-                --no-links \
-                --safe-links \
-                --ignore-errors \
-                --max-size=1G \
-                "$chunk_path/" "$chunk_backup_path/" 2>/dev/null; then
-                ((successful_chunks++))
-                log "info" "✅ Chunk '$chunk' backed up successfully"
-            else
-                local exit_code=$?
-                ((failed_chunks++))
-                if [[ $exit_code -eq 124 ]]; then
-                    log "warn" "⚠️ Chunk '$chunk' timed out after 10 minutes"
-                else
-                    log "warn" "⚠️ Chunk '$chunk' failed with exit code $exit_code"
-                fi
-                
-                # Clean up failed chunk
-                rm -rf "$chunk_backup_path" 2>/dev/null || true
-                
-                # Retry failed chunk with different strategy
-                if [[ $exit_code -ne 124 ]]; then  # Don't retry timeouts
-                    log "info" "Retrying chunk '$chunk' with simplified options..."
-                    if timeout 300 rsync -av --exclude-from="$exclude_file" \
-                        --no-perms --no-owner --no-group --no-times \
-                        --ignore-errors --max-size=500M \
-                        "$chunk_path/" "$chunk_backup_path/" 2>/dev/null; then
-                        log "info" "✅ Chunk '$chunk' succeeded on retry"
-                        ((successful_chunks++))
-                        ((failed_chunks--))
-                    else
-                        log "warn" "⚠️ Chunk '$chunk' failed on retry as well"
-                    fi
-                fi
+            cleanup_downloads=true
+            cleanup_downloads_days="$2"
+            if ! is_positive_int "$cleanup_downloads_days"; then
+                log_error "DAYS must be a positive integer"
+                exit 1
             fi
-        else
-            log "info" "Skipping chunk '$chunk' (not found)"
-        fi
-    done
-    
-    # Backup large directories with special handling
-    for large_dir in "${large_directories[@]}"; do
-        local chunk_path="$source_dir/$large_dir"
-        local chunk_backup_path="$full_backup_path/$large_dir"
-        
-        if [[ -e "$chunk_path" ]]; then
-            log "info" "Backing up large directory: $large_dir ($((successful_chunks + failed_chunks + 1))/$total_chunks)"
-            
-            # Create chunk backup directory
-            mkdir -p "$(dirname "$chunk_backup_path")"
-            
-            # Use longer timeout and more aggressive exclusions for large directories
-            if timeout 1200 rsync -av --progress --exclude-from="$exclude_file" \
-                --delete-excluded \
-                --stats \
-                --timeout=120 \
-                --contimeout=20 \
-                --no-whole-file \
-                --partial \
-                --partial-dir="$full_backup_path/.rsync-partial" \
-                --temp-dir="$full_backup_path/.rsync-temp" \
-                --no-super \
-                --no-devices \
-                --no-specials \
-                --no-perms \
-                --no-owner \
-                --no-group \
-                --no-times \
-                --no-links \
-                --safe-links \
-                --ignore-errors \
-                --max-size=500M \
-                --bwlimit=25000 \
-                "$chunk_path/" "$chunk_backup_path/" 2>/dev/null; then
-                ((successful_chunks++))
-                log "info" "✅ Large directory '$large_dir' backed up successfully"
-            else
-                local exit_code=$?
-                ((failed_chunks++))
-                if [[ $exit_code -eq 124 ]]; then
-                    log "warn" "⚠️ Large directory '$large_dir' timed out after 20 minutes"
-                else
-                    log "warn" "⚠️ Large directory '$large_dir' failed with exit code $exit_code"
-                fi
-                
-                # Clean up failed chunk
-                rm -rf "$chunk_backup_path" 2>/dev/null || true
-                
-                # Retry with even more aggressive settings
-                if [[ $exit_code -ne 124 ]]; then
-                    log "info" "Retrying large directory '$large_dir' with minimal options..."
-                    if timeout 600 rsync -av --exclude-from="$exclude_file" \
-                        --no-perms --no-owner --no-group --no-times \
-                        --ignore-errors --max-size=100M \
-                        "$chunk_path/" "$chunk_backup_path/" 2>/dev/null; then
-                        log "info" "✅ Large directory '$large_dir' succeeded on retry"
-                        ((successful_chunks++))
-                        ((failed_chunks--))
-                    else
-                        log "warn" "⚠️ Large directory '$large_dir' failed on retry as well"
-                    fi
-                fi
-            fi
-        else
-            log "info" "Skipping large directory '$large_dir' (not found)"
-        fi
-    done
-    
-    # Backup project chunks separately
-    for chunk in "${projects_chunks[@]}"; do
-        local chunk_path="$source_dir/$chunk"
-        local chunk_backup_path="$full_backup_path/$chunk"
-        
-        if [[ -e "$chunk_path" ]]; then
-            log "info" "Backing up project chunk: $chunk ($((successful_chunks + failed_chunks + 1))/$total_chunks)"
-            
-            # Create chunk backup directory
-            mkdir -p "$(dirname "$chunk_backup_path")"
-            
-            # Use timeout to prevent hanging on individual chunks
-            if timeout 600 rsync -av --progress --exclude-from="$exclude_file" \
-                --delete-excluded \
-                --stats \
-                --timeout=60 \
-                --contimeout=10 \
-                --no-whole-file \
-                --partial \
-                --partial-dir="$full_backup_path/.rsync-partial" \
-                --temp-dir="$full_backup_path/.rsync-temp" \
-                --no-super \
-                --no-devices \
-                --no-specials \
-                --no-perms \
-                --no-owner \
-                --no-group \
-                --no-times \
-                --no-links \
-                --safe-links \
-                --ignore-errors \
-                --max-size=1G \
-                "$chunk_path/" "$chunk_backup_path/" 2>/dev/null; then
-                ((successful_chunks++))
-                log "info" "✅ Project chunk '$chunk' backed up successfully"
-            else
-                local exit_code=$?
-                ((failed_chunks++))
-                if [[ $exit_code -eq 124 ]]; then
-                    log "warn" "⚠️ Project chunk '$chunk' timed out after 10 minutes"
-                else
-                    log "warn" "⚠️ Project chunk '$chunk' failed with exit code $exit_code"
-                fi
-                
-                # Clean up failed chunk
-                rm -rf "$chunk_backup_path" 2>/dev/null || true
-                
-                # Retry failed project chunk with different strategy
-                if [[ $exit_code -ne 124 ]]; then  # Don't retry timeouts
-                    log "info" "Retrying project chunk '$chunk' with simplified options..."
-                    if timeout 300 rsync -av --exclude-from="$exclude_file" \
-                        --no-perms --no-owner --no-group --no-times \
-                        --ignore-errors --max-size=500M \
-                        "$chunk_path/" "$chunk_backup_path/" 2>/dev/null; then
-                        log "info" "✅ Project chunk '$chunk' succeeded on retry"
-                        ((successful_chunks++))
-                        ((failed_chunks--))
-                    else
-                        log "warn" "⚠️ Project chunk '$chunk' failed on retry as well"
-                    fi
-                fi
-            fi
-        else
-            log "info" "Skipping project chunk '$chunk' (not found)"
-        fi
-    done
-    
-    # Clean up temporary directories and files
-    rm -rf "$full_backup_path/.rsync-partial"
-    rm -rf "$full_backup_path/.rsync-temp"
-    rm -f "$exclude_file"
-    
-    # Report results with timing
-    local backup_end_time=$(date +%s)
-    local total_backup_time=$((backup_end_time - backup_start_time))
-    local backup_minutes=$((total_backup_time / 60))
-    local backup_seconds=$((total_backup_time % 60))
-    
-    log "info" "Chunked backup completed: $successful_chunks successful, $failed_chunks failed"
-    log "info" "Total backup time: ${backup_minutes}m ${backup_seconds}s"
-    if [[ $successful_chunks -gt 0 ]]; then
-        local avg_time_per_chunk=$((total_backup_time / successful_chunks))
-        log "info" "Average time per successful chunk: ${avg_time_per_chunk}s"
-    fi
-    
-    # Validate backup integrity
-    if [[ $successful_chunks -gt 0 ]]; then
-        validate_backup_integrity "$full_backup_path" "$source_dir"
-    fi
-    
-    if [[ $successful_chunks -gt 0 ]]; then
-        # Create backup manifest
-        local manifest_file="$full_backup_path/backup_manifest.txt"
-        {
-            echo "Backup Date: $(date)"
-            echo "Source: $source_dir"
-            echo "Destination: $full_backup_path"
-            echo "Backup Type: chunked rsync"
-            echo "Successful Chunks: $successful_chunks/$total_chunks"
-            echo "Failed Chunks: $failed_chunks"
-            echo ""
-            echo "Files backed up:"
-            find "$full_backup_path" -type f | wc -l | xargs echo "Total files:"
-            du -sh "$full_backup_path" | xargs echo "Total size:"
-        } > "$manifest_file"
-        
-        log "info" "Backup manifest created: $manifest_file"
-        
-        # Clean up old backups (keep last 7)
-        cleanup_old_rsync_backups "$backup_dir" 7
-        
-        if [[ $failed_chunks -eq 0 ]]; then
-            log "info" "✅ All chunks backed up successfully"
-            return 0
-        else
-            log "warn" "⚠️ Backup completed with $failed_chunks failed chunks"
-            return 0  # Partial success is still useful
-        fi
-    else
-        log "error" "❌ All backup chunks failed"
-        rm -rf "$full_backup_path"
-        return 1
-    fi
-}
-
-# Simple rsync backup function (replaces Restic) - now uses chunked approach
-perform_simple_rsync_backup() {
-    local source_dir="$1"
-    local backup_dir="$2"
-    
-    log "info" "Using chunked backup strategy for better reliability"
-    perform_chunked_backup "$source_dir" "$backup_dir"
-}
-
-# Function to validate backup integrity
-validate_backup_integrity() {
-    local backup_path="$1"
-    local source_path="$2"
-    
-    log "info" "Validating backup integrity..."
-    
-    local validation_errors=0
-    local total_files=0
-    local validated_files=0
-    
-    # Check critical files exist in backup
-    local critical_files=(
-        ".zshrc"
-        ".gitconfig"
-        ".ssh"
-        "Library/Preferences"
-    )
-    
-    for critical_file in "${critical_files[@]}"; do
-        if [[ -e "$source_path/$critical_file" ]]; then
-            if [[ -e "$backup_path/$critical_file" ]]; then
-                log "info" "✅ Critical file '$critical_file' backed up successfully"
-                ((validated_files++))
-            else
-                log "warn" "⚠️ Critical file '$critical_file' missing from backup"
-                ((validation_errors++))
-            fi
-        fi
-    done
-    
-    # Check backup size is reasonable (not empty, not suspiciously small)
-    local backup_size
-    backup_size=$(du -sm "$backup_path" 2>/dev/null | cut -f1)
-    if [[ $backup_size -lt 1 ]]; then
-        log "error" "❌ Backup appears to be empty or corrupted"
-        ((validation_errors++))
-    elif [[ $backup_size -lt 10 ]]; then
-        log "warn" "⚠️ Backup size seems unusually small: ${backup_size}MB"
-    else
-        log "info" "✅ Backup size looks reasonable: ${backup_size}MB"
-    fi
-    
-    # Count files in backup
-    total_files=$(find "$backup_path" -type f | wc -l)
-    log "info" "Backup contains $total_files files"
-    
-    if [[ $validation_errors -eq 0 ]]; then
-        log "info" "✅ Backup validation passed"
-        return 0
-    else
-        log "warn" "⚠️ Backup validation found $validation_errors issues"
-        return 1
-    fi
-}
-
-# Function to handle backup failures gracefully
-handle_backup_failure() {
-    local backup_dir="$1"
-    local error_code="$2"
-    
-    log "warn" "Backup failed with error code $error_code, attempting recovery..."
-    
-    # Try to clean up any partial backup
-    if [[ -d "$backup_dir" ]]; then
-        local latest_backup=$(find "$backup_dir" -maxdepth 1 -type d -name "backup_*" -exec ls -t {} + 2>/dev/null | head -1)
-        if [[ -n "$latest_backup" && -d "$latest_backup" ]]; then
-            log "info" "Cleaning up partial backup: $(basename "$latest_backup")"
-            rm -rf "$latest_backup"
-        fi
-    fi
-    
-    # Suggest alternative backup methods
-    log "info" "💡 Backup recovery suggestions:"
-    log "info" "   - Try running with --turbo flag for optimized performance"
-    log "info" "   - Check available disk space"
-    log "info" "   - Consider excluding large directories (Downloads, Movies, etc.)"
-    log "info" "   - Run backup during off-peak hours"
-    
-    return 1
-}
-
-# Function to clean up old rsync backups
-cleanup_old_rsync_backups() {
-    local backup_dir="$1"
-    local keep_count="$2"
-    
-    log "info" "Cleaning up old backups (keeping last $keep_count)..."
-    
-    # Get list of backup directories sorted by modification time (newest first)
-    local backups=($(find "$backup_dir" -maxdepth 1 -type d -name "backup_*" -exec ls -t {} + 2>/dev/null))
-    
-    if [[ ${#backups[@]} -gt $keep_count ]]; then
-        local to_remove=$((${#backups[@]} - keep_count))
-        log "info" "Removing $to_remove old backup(s)..."
-        
-        for ((i=keep_count; i<${#backups[@]}; i++)); do
-            local old_backup="${backups[$i]}"
-            log "info" "Removing old backup: $(basename "$old_backup")"
-            rm -rf "$old_backup"
-        done
-    else
-        log "info" "No old backups to remove (${#backups[@]} backups, keeping $keep_count)"
-    fi
-}
-
-# Function to backup system preferences and settings
-backup_system_preferences() {
-    local backup_dir="$1"
-    local prefs_backup_dir="$backup_dir/system_preferences"
-    
-    log "info" "Backing up system preferences and settings..."
-    mkdir -p "$prefs_backup_dir"
-    
-    # Backup user preferences
-    local user_prefs=(
-        "$HOME/Library/Preferences"
-        "$HOME/Library/Application Support"
-        "$HOME/Library/LaunchAgents"
-        "$HOME/.config"
-        "$HOME/.ssh"
-        "$HOME/.gitconfig"
-        "$HOME/.zshrc"
-        "$HOME/.bash_profile"
-        "$HOME/.bashrc"
-    )
-    
-    for pref_path in "${user_prefs[@]}"; do
-        if [[ -e "$pref_path" ]]; then
-            local pref_name=$(basename "$pref_path")
-            log "info" "Backing up: $pref_name"
-            
-            # Special handling for Application Support (selective backup)
-            if [[ "$pref_name" == "Application Support" ]]; then
-                # Only backup specific important directories
-                local important_dirs=(
-                    "Application Support/Google"
-                    "Application Support/Mozilla"
-                    "Application Support/Apple"
-                    "Application Support/Keychain"
-                )
-                
-                for dir in "${important_dirs[@]}"; do
-                    if [[ -d "$HOME/Library/$dir" ]]; then
-                        mkdir -p "$prefs_backup_dir/Application Support/$(basename "$dir")"
-                        cp -R "$HOME/Library/$dir" "$prefs_backup_dir/Application Support/" 2>/dev/null || true
-                    fi
-                done
-            else
-                cp -R "$pref_path" "$prefs_backup_dir/" 2>/dev/null || log "warn" "Could not backup $pref_path"
-            fi
-        fi
-    done
-    
-    # Backup system-wide preferences (requires sudo)
-    log "info" "Backing up system-wide preferences..."
-    sudo cp -R /Library/Preferences "$prefs_backup_dir/SystemPreferences" 2>/dev/null || log "warn" "Could not backup system preferences"
-    
-    # Create preferences manifest
-    log "info" "Creating preferences manifest..."
-    find "$prefs_backup_dir" -type f -name "*.plist" > "$prefs_backup_dir/preferences_manifest.txt" 2>/dev/null
-    
-    log "info" "System preferences backup completed: $prefs_backup_dir"
-}
-
-# Main backup execution
-log_section_start "System Backup"
-echo "Setting up rsync backup..."
-local_backup_dir="$HOME/.local/backups"
-
-# Backup system preferences first
-backup_system_preferences "$local_backup_dir"
-
-if perform_simple_rsync_backup "$HOME" "$local_backup_dir"; then
-    log "info" "Simple rsync backup completed successfully"
-    echo ""
-    log "info" "Your backup is stored in: $local_backup_dir"
-    log "info" "System preferences backed up to: $local_backup_dir/system_preferences"
-    log "info" "Backup uses native macOS rsync - no encryption password needed"
-    log "info" "Backups are stored in plain text for easy access and restoration"
-else
-    log "error" "Backup failed. Please check the error messages above."
-fi
-
-log_section_end "System Backup"
-
-###############################################################################
-# 2. Clear user-level caches and additional cleanup
-###############################################################################
-log_section_start "User-Level Cache Cleanup"
-monitor_resources "cache cleanup"
-
-# Validate cache directory before cleanup
-if ! validate_path "$HOME/Library/Caches" "user cache directory"; then
-    log "error" "Invalid cache directory path"
-    log_section_end "User-Level Cache Cleanup"
-    return 1
-fi
-
-# Clear user-level caches with proper permission handling
-log "info" "Clearing user-level caches in ~/Library/Caches/..."
-
-# Use find to handle permission issues gracefully, excluding Restic cache directory
-find ~/Library/Caches -mindepth 1 -maxdepth 1 -type d -not -name "restic" -exec rm -rf {} + 2>/dev/null || {
-    # If that fails, try with sudo for stubborn files (still excluding Restic cache)
-    log "warn" "Some cache files require elevated permissions, attempting with sudo..."
-    sudo find ~/Library/Caches -mindepth 1 -maxdepth 1 -type d -not -name "restic" -exec rm -rf {} + 2>/dev/null || true
-}
-
-log "info" "User-level caches cleared."
-
-# Additional cleanup tasks with validation
-log "info" "Performing additional cleanup tasks..."
-if [[ "$TURBO_MODE" == true ]]; then
-    # Run cleanup tasks in parallel for maximum speed
-    run_parallel_commands \
-        "find ~/Library/Application\ Support/Google/Chrome/Default/Application\ Cache -type f -delete 2>/dev/null || true" \
-        "find ~/Library/Application\ Support/Firefox/Profiles -name cache2 -type d -exec rm -rf {}/* 2>/dev/null \; || true" \
-        "find ~/Library/Developer/Xcode/DerivedData -type f -delete 2>/dev/null || true" \
-        "find ~/Library/Application\ Support/Steam/logs -type f -delete 2>/dev/null || true"
-else
-    # Run cleanup tasks sequentially
-    run_command "find ~/Library/Application\ Support/Google/Chrome/Default/Application\ Cache -type f -delete 2>/dev/null || true" "Clearing Chrome application cache" "info" "true"
-    run_command "find ~/Library/Application\ Support/Firefox/Profiles -name cache2 -type d -exec rm -rf {}/* 2>/dev/null \; || true" "Clearing Firefox cache" "info" "true"
-    run_command "find ~/Library/Developer/Xcode/DerivedData -type f -delete 2>/dev/null || true" "Clearing Xcode derived data" "info" "true"
-    run_command "find ~/Library/Application\ Support/Steam/logs -type f -delete 2>/dev/null || true" "Clearing Steam logs" "info" "true"
-fi
-
-# Clear old iOS device backups (older than 30 days)
-if [[ -d ~/Library/Application\ Support/MobileSync/Backup ]]; then
-    run_command "find ~/Library/Application\ Support/MobileSync/Backup -type d -mtime +30 -exec rm -rf {} +" "Removing old iOS device backups (30+ days)" "info" "true"
-fi
-
-log_section_end "User-Level Cache Cleanup"
-
-###############################################################################
-# 3. Remove logs older than 7 days
-###############################################################################
-log_section_start "Log Cleanup"
-run_command "sudo find /var/log -type f -mtime +7 -exec rm -f {} \; 2>/dev/null || true" "Removing system logs older than 7 days"
-run_command "find ~/Library/Logs -type f -mtime +7 -exec rm -f {} \; 2>/dev/null || true" "Removing user logs older than 7 days"
-log_section_end "Log Cleanup"
-
-###############################################################################
-# Continue with the main maintenance tasks
-###############################################################################
-
-#-----------------------------------------------------------------------
-# Homebrew maintenance
-#-----------------------------------------------------------------------
-log_section_start "Homebrew Maintenance"
-if command -v brew &>/dev/null; then
-    run_command "brew update" "Checking for Homebrew updates"
-    brew_updates="$(brew upgrade --dry-run 2>&1)"
-    
-    # Check for warnings in the output
-    if echo "$brew_updates" | grep -q "Warning:"; then
-        log "warn" "Homebrew upgrade warnings detected (this is normal)"
-    fi
-    
-    if [[ -z "$brew_updates" ]] || echo "$brew_updates" | grep -q "Nothing to upgrade"; then
-        log "info" "No updates found for Homebrew."
-    else
-        log "info" "Homebrew updates found. Upgrading packages..."
-        run_command "brew upgrade" "Updating Homebrew packages" "info" "true"
-    fi
-    
-    run_command "brew cleanup" "Running brew cleanup"
-else
-    log "warn" "Homebrew is not installed."
-fi
-log_section_end "Homebrew Maintenance"
-
-#-----------------------------------------------------------------------
-# Mac App Store updates
-#-----------------------------------------------------------------------
-log_section_start "Mac App Store Updates"
-if command -v mas &>/dev/null; then
-    # Check for updates (suppress output if no updates)
-    mas_updates="$(mas outdated 2>/dev/null || echo "")"
-    if [[ -z "$mas_updates" ]]; then
-        log "info" "No updates found for Mac App Store apps."
-    else
-        log "info" "Mac App Store updates found. This may take several minutes..."
-        # Use specialized function that filters output and handles errors gracefully
-        if ! run_mas_upgrade "Updating Mac App Store apps" 600; then
-            log "warn" "Mac App Store update encountered issues, but continuing with maintenance"
-        fi
-    fi
-else
-    log "warn" "MAS (Mac App Store CLI) is not installed."
-fi
-log_section_end "Mac App Store Updates"
-
-#-----------------------------------------------------------------------
-# System updates
-#-----------------------------------------------------------------------
-log_section_start "System Updates"
-run_command "softwareupdate -l" "Checking for system updates"
-system_updates="$(softwareupdate -l 2>&1)"
-if echo "$system_updates" | grep -q "No new software available."; then
-    log "info" "No system updates available."
-else
-    log "info" "System updates found. You will be prompted for your password to install them."
-    log "info" "This is required for: sudo softwareupdate -ia"
-    run_command "sudo softwareupdate -ia" "Installing system updates"
-fi
-log_section_end "System Updates"
-
-#-----------------------------------------------------------------------
-# System health checks
-#-----------------------------------------------------------------------
-log_section_start "System Health Checks"
-log "info" "Performing system health checks..."
-
-# Check disk space
-log "info" "Checking available disk space..."
-disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
-if [[ $disk_usage -gt 90 ]]; then
-    log "warn" "Disk usage is high: ${disk_usage}%"
-elif [[ $disk_usage -gt 80 ]]; then
-    log "warn" "Disk usage is moderate: ${disk_usage}%"
-else
-    log "info" "Disk usage is healthy: ${disk_usage}%"
-fi
-
-# Check memory usage
-log "info" "Checking memory usage..."
-memory_pressure=$(memory_pressure | grep "System-wide memory free percentage" | awk '{print $5}' | sed 's/%//')
-if [[ -n "$memory_pressure" ]]; then
-    if [[ $memory_pressure -lt 10 ]]; then
-        log "warn" "Memory pressure is high: ${memory_pressure}% free"
-    else
-        log "info" "Memory pressure is normal: ${memory_pressure}% free"
-    fi
-fi
-
-# Check system integrity protection
-log "info" "Checking System Integrity Protection status..."
-sip_status=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown")
-log "info" "System Integrity Protection: $sip_status"
-
-log_section_end "System Health Checks"
-
-#-----------------------------------------------------------------------
-# Security monitoring and malware detection
-#-----------------------------------------------------------------------
-log_section_start "Security Monitoring"
-log "info" "Performing security checks and malware detection..."
-
-# Check for security updates
-log "info" "Checking for pending security updates..."
-security_updates=$(softwareupdate -l 2>&1 | grep -i "security" || echo "")
-if [[ -n "$security_updates" ]]; then
-    log "warn" "Security updates available:"
-    echo "$security_updates" | while read -r line; do
-        log "warn" "  - $line"
-    done
-else
-    log "info" "No pending security updates found"
-fi
-
-# Check XProtect signature status
-log "info" "Checking XProtect malware signatures..."
-if command -v xprotect &>/dev/null; then
-    xprotect_status=$(xprotect --status 2>/dev/null || echo "Unknown")
-    log "info" "XProtect status: $xprotect_status"
-else
-    log "info" "XProtect not available (normal on some systems)"
-fi
-
-# Check quarantine files
-log "info" "Checking for quarantined files..."
-quarantine_count=$(find ~/Library/Application\ Support/Quarantine -type f 2>/dev/null | wc -l)
-if [[ $quarantine_count -gt 0 ]]; then
-    log "warn" "Found $quarantine_count quarantined files"
-    log "info" "Review quarantined files in: ~/Library/Application Support/Quarantine"
-else
-    log "info" "No quarantined files found"
-fi
-
-# Check for suspicious processes
-log "info" "Scanning for suspicious processes..."
-suspicious_processes=$(ps aux | grep -E "(cryptominer|bitcoin|mining)" | grep -v grep || echo "")
-if [[ -n "$suspicious_processes" ]]; then
-    log "warn" "Potentially suspicious processes detected:"
-    echo "$suspicious_processes" | while read -r line; do
-        log "warn" "  - $line"
-    done
-else
-    log "info" "No suspicious processes detected"
-fi
-
-# Check system integrity protection status
-log "info" "Verifying System Integrity Protection (SIP)..."
-sip_status=$(csrutil status 2>/dev/null | grep -o "enabled\|disabled" || echo "unknown")
-if [[ "$sip_status" == "enabled" ]]; then
-    log "info" "✅ System Integrity Protection is enabled"
-else
-    log "warn" "⚠️  System Integrity Protection is $sip_status"
-fi
-
-# Check for unauthorized login items
-log "info" "Checking for unauthorized login items..."
-login_items=$(osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null || echo "")
-if [[ -n "$login_items" ]]; then
-    log "info" "Current login items: $login_items"
-else
-    log "info" "No login items found"
-fi
-
-log_section_end "Security Monitoring"
-
-#-----------------------------------------------------------------------
-# System maintenance tasks
-#-----------------------------------------------------------------------
-log_section_start "System Maintenance Tasks"
-run_command "sudo periodic daily weekly monthly" "Running periodic maintenance tasks"
-run_command "sudo dscacheutil -flushcache" "Flushing DNS cache"
-run_command "sudo killall -HUP mDNSResponder" "Restarting mDNSResponder"
-log_section_end "System Maintenance Tasks"
-
-#-----------------------------------------------------------------------
-# Reindex Spotlight
-#-----------------------------------------------------------------------
-log_section_start "Spotlight Reindexing"
-run_command "sudo mdutil -i on /" "Reindexing Spotlight"
-log_section_end "Spotlight Reindexing"
-
-#-----------------------------------------------------------------------
-# Disk Utility First Aid
-#-----------------------------------------------------------------------
-log_section_start "Disk Utility First Aid"
-volumes=($(diskutil list | grep "Apple_HFS\\|APFS Volume" | awk '{print $NF}'))
-for volume in "${volumes[@]}"; do
-    if diskutil info "$volume" | grep -q "Read-Only"; then
-        continue
-    fi
-    run_command "sudo diskutil verifyVolume \"$volume\"" "Verifying volume $volume"
-    run_command "sudo diskutil repairVolume \"$volume\"" "Repairing volume $volume"
+            shift 2
+            continue
+            ;;
+        --brew)
+            brew_update=true
+            ;;
+        --mas)
+            mas_update=true
+            ;;
+        --check-os-updates)
+            os_update_check=true
+            ;;
+        --apply-os-updates)
+            os_update_check=true
+            os_update_apply=true
+            ;;
+        --diagnostics)
+            diagnostics=true
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        --verbose)
+            VERBOSE=true
+            LOG_LEVEL=debug
+            ;;
+        --help|-h)
+            print_help
+            exit 0
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            print_help
+            exit 1
+            ;;
+    esac
+    shift
 done
-log_section_end "Disk Utility First Aid"
 
-#-----------------------------------------------------------------------
-# Purge memory cache
-#-----------------------------------------------------------------------
-log_section_start "Memory Cache Purge"
-run_command "sudo purge" "Purging memory cache"
-log_section_end "Memory Cache Purge"
+###############################################################################
+# Main
+###############################################################################
 
-#-----------------------------------------------------------------------
-# Rebuild Launch Services database
-#-----------------------------------------------------------------------
-log_section_start "Launch Services Rebuild"
-run_command "sudo /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain system -domain user" "Rebuilding Launch Services database"
-log_section_end "Launch Services Rebuild"
+ensure_macos
 
-#-----------------------------------------------------------------------
-# Kernel cache rebuild
-#-----------------------------------------------------------------------
-log_section_start "Kernel Cache Rebuild"
-run_command "sudo kextcache -u /" "Rebuilding kernel cache"
-log_section_end "Kernel Cache Rebuild"
+log_info "Starting macOS maintenance (dry-run=$DRY_RUN, verbose=$VERBOSE)."
 
-#-----------------------------------------------------------------------
-# Temporary files clean-up and notification
-#-----------------------------------------------------------------------
-log_section_start "Temporary Files Clean-Up"
-run_command "sudo rm -rf /private/var/folders/*" "Cleaning up temporary files"
-run_command "osascript -e 'display notification \"Maintenance completed!\" with title \"System Maintenance\"'" "Showing completion notification"
-log_section_end "Temporary Files Clean-Up"
+cleanup=${cleanup:-false}
+diagnostics=${diagnostics:-false}
 
-#-----------------------------------------------------------------------
-# Script completion
-#-----------------------------------------------------------------------
-SCRIPT_END_TIME=$(date +%s)
-TOTAL_DURATION=$((SCRIPT_END_TIME - SCRIPT_START_TIME))
+if ${cleanup}; then
+    cleanup_user_caches
+    cleanup_logs
+    cleanup_tmpdir
+    if ${cleanup_downloads}; then
+        cleanup_downloads_run
+    fi
+fi
 
-# Restore system performance settings
-restore_system_performance
+if ${brew_update}; then
+    run_brew_updates
+fi
 
-# Final resource monitoring and cleanup
-monitor_resources "script completion"
-cleanup_resources
+if ${mas_update}; then
+    run_mas_updates
+fi
 
-log_section_boundary "end"
+if ${os_update_check}; then
+    run_os_updates
+fi
+
+if ${diagnostics}; then
+    run_diagnostics
+fi
+
+log_info "Maintenance completed."
