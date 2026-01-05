@@ -39,7 +39,7 @@ LOG_LEVEL=${LOG_LEVEL:-info}
 DRY_RUN=false
 VERBOSE=false
 
-log() {
+log_msg() {
     local level="$1"; shift
     local message="$*"
     local levels=(error warn info debug)
@@ -58,10 +58,10 @@ log() {
     fi
 }
 
-log_debug() { log debug "$@"; }
-log_info() { log info "$@"; }
-log_warn() { log warn "$@"; }
-log_error() { log error "$@"; }
+log_debug() { log_msg debug "$@"; }
+log_info() { log_msg info "$@"; }
+log_warn() { log_msg warn "$@"; }
+log_error() { log_msg error "$@"; }
 
 run_cmd() {
     local description="$1"; shift
@@ -145,6 +145,7 @@ cleanup_downloads=false
 cleanup_downloads_days=30
 cleanup=false
 diagnostics=false
+diagnostics_shutdown_cause=false
 cleanup_downloads_run() {
     local downloads_dir="$HOME/Downloads"
     [[ -d "$downloads_dir" ]] || { log_info "Downloads directory not found; skipping."; return 0; }
@@ -188,10 +189,14 @@ run_os_updates() {
         log_info "(dry-run) softwareupdate ${args[*]}"
         return 0
     fi
-    if [[ $EUID -ne 0 ]]; then
-        log_warn "softwareupdate typically requires sudo; attempting with sudo."
+    if $os_update_apply; then
+        if [[ $EUID -ne 0 ]]; then
+            log_warn "softwareupdate install requires sudo; attempting with sudo."
+        fi
+        run_cmd "Running softwareupdate ${args[*]}" sudo softwareupdate "${args[@]}"
+        return 0
     fi
-    run_cmd "Running softwareupdate ${args[*]}" sudo softwareupdate "${args[@]}"
+    run_cmd "Running softwareupdate ${args[*]}" softwareupdate "${args[@]}"
 }
 
 ###############################################################################
@@ -207,8 +212,10 @@ run_diagnostics() {
         tmutil status || true
     fi
 
-    log_info "Recent system events (last 20 shutdown causes):"
-    log show --predicate 'eventMessage CONTAINS "Previous shutdown cause"' --last 1d --info --debug | tail -n 20 || true
+    if $diagnostics_shutdown_cause; then
+        log_info "Recent system events (last 20 shutdown causes):"
+        /usr/bin/log show --predicate 'eventMessage CONTAINS "Previous shutdown cause"' --last 1d --info --debug | tail -n 20 || true
+    fi
 }
 
 ###############################################################################
@@ -222,6 +229,8 @@ macos_maintenance.sh - safe macOS maintenance
 Usage: macos_maintenance.sh [options]
 
 Options:
+  --quick                   Run weekly maintenance (default when no args)
+  --comprehensive           Run full maintenance (includes shutdown-cause logs)
   --cleanup                 Run safe cache/log/tmp cleanup
   --cleanup-downloads DAYS  Remove files older than DAYS in ~/Downloads (off by default)
   --brew                    Run Homebrew update/upgrade/cleanup
@@ -233,7 +242,8 @@ Options:
   --verbose                 Enable verbose logging
   --help                    Show this help text
 
-Default behavior: none. Select the tasks you want to run.
+Default behavior: --quick (weekly maintenance).
+If both --quick and --comprehensive are supplied, the last one wins.
 USAGE
 }
 
@@ -241,9 +251,26 @@ USAGE
 # Argument parsing
 ###############################################################################
 
+set_quick_defaults() {
+    cleanup=true
+    brew_update=true
+    mas_update=true
+    os_update_check=true
+    diagnostics=true
+    diagnostics_shutdown_cause=false
+}
+
+set_comprehensive_defaults() {
+    cleanup=true
+    brew_update=true
+    mas_update=true
+    os_update_check=true
+    diagnostics=true
+    diagnostics_shutdown_cause=true
+}
+
 if [[ $# -eq 0 ]]; then
-    print_help
-    exit 0
+    set_quick_defaults
 fi
 
 is_positive_int() {
@@ -252,6 +279,12 @@ is_positive_int() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --quick)
+            set_quick_defaults
+            ;;
+        --comprehensive)
+            set_comprehensive_defaults
+            ;;
         --cleanup)
             cleanup=true
             ;;
