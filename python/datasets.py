@@ -46,6 +46,8 @@ def convert_and_optimize_to_numerics(
 
     # Convert string columns to categorical codes
     for col in string_cols:
+        # REVIEW: does this keep the info about the values or loss of original 
+        # labels?
         new_df[col] = new_df[col].astype('category').cat.codes
 
     # Downcast numeric columns
@@ -57,8 +59,12 @@ def convert_and_optimize_to_numerics(
             
             # If the conversion doesn't change the data (no precision loss),
             # return the integer series
+
+            # REVIEW: why this check? any edge cases that won't pass as 
+            # expected?``
             if (int_series == to_numeric(series)).all():
                 return int_series
+        # TODO: write out expected failing cases
         except ValueError:
             pass
         
@@ -73,19 +79,22 @@ def convert_and_optimize_to_numerics(
 
     return new_df
 
-def camel_to_snake(name: str) -> str:
+# REVIEW: still working? any way to make it more robust/find cases where it
+# fails? replace REGEX with something else so I'm not managing/tinkering with
+# the match str?
+def camel_to_snake(val: str) -> str:
     """
-    Convert a camel case string to snake case.
+    Convert a camel case to snake case.
 
     Args:
-        name (str): The camel case string.
+        val (str): The camel case string.
 
     Returns:
         str: The snake case converted string.
 
     Example:
-        snake_name = camel_to_snake("CamelCaseString")
-        print(snake_name)  # Output: camel_case_string
+        snake_val = camel_to_snake("CamelCaseString")
+        print(snake_val)  # Output: camel_case_string
     """
-    s1 = sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+    s1 = sub("(.)([A-Z][a-z]+)", r"\1_\2", val)
     return sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()

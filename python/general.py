@@ -30,9 +30,11 @@ def get_current_path() -> PlPath:
 
 def find_project_root(current_path: Optional[PlPath] = None,
                       marker: str = ".git") -> PlPath:
+    # REVIEW: when does it use the script's dir or the cwd?
+    # TODO: add notes on the above answer
     """
     Traverse upwards from the current path until a directory with the 
-    specified marker is found, which indicates the root of the project.
+    specified marker is found, which should indicate the root of the project.
 
     Args:
         current_path (Optional[PlPath], optional): The starting directory 
@@ -62,6 +64,8 @@ def find_project_root(current_path: Optional[PlPath] = None,
         f"Unable to find the root directory. No '{marker}' found."
     )
 
+# TODO: I know this was useful for something? syntax highlighting and...? 
+# figure it out and note it
 def ensure_makefile_and_env() -> None:
     """
     Ensures a Makefile with specific commands and a .env file with defined 
