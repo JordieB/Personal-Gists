@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # macos_maintenance.sh - safe macOS maintenance runner
+# Phase functions are dispatched through run_phase; finish is an EXIT trap.
+# shellcheck disable=SC2329
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_VERSION="2.1.0"
+readonly SCRIPT_VERSION="3.0.0"
 readonly SCRIPT_NAME="macos_maintenance.sh"
-readonly STANDARD_PLAN=(cleanup brew mas check_os_updates diagnostics)
 
 LOG_LEVEL=${LOG_LEVEL:-info}
 DRY_RUN=true
-VERBOSE=false
-YES=false
 cleanup=false
 cleanup_downloads=false
 cleanup_downloads_days=30
@@ -21,6 +20,13 @@ os_update_apply=false
 diagnostics=false
 backup=false
 TASK_SELECTED=false
+brew_autoremove=false
+brew_greedy=false
+LOGFILE=""
+RUN_TMP=""
+CURRENT_PHASE=startup
+RUN_START=$SECONDS
+LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-30}
 
 # Backup defaults. Backup remains opt-in only via --backup.
 BACKUP_KEEP_LAST=${BACKUP_KEEP_LAST:-3}
@@ -68,17 +74,13 @@ log() {
   shift
   local message="$*"
 
-  log_should_emit "$level" || return 0
-
-  printf '%s script=%s version=%s level=%s pid=%s user=%s dry_run=%s msg=%q\n' \
-    "$(date '+%Y-%m-%dT%H:%M:%S%z')" \
-    "$SCRIPT_NAME" \
-    "$SCRIPT_VERSION" \
-    "$level" \
-    "$$" \
-    "$(invoking_user 2>/dev/null || id -un)" \
-    "$DRY_RUN" \
-    "$message" >&2
+  local entry
+  printf -v entry '%s level=%s phase=%q msg=%s' \
+    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$level" "$CURRENT_PHASE" "$message"
+  if [[ -n "$LOGFILE" ]]; then
+    printf '%s\n' "$entry" >&9 || { printf 'Cannot write maintenance log\n' >&2; exit 1; }
+  fi
+  if log_should_emit "$level"; then printf '%s\n' "$entry" >&2; fi
 }
 
 log_debug() { log debug "$@"; }
@@ -105,7 +107,7 @@ log_command_output() {
 
   [[ -s "$output_file" ]] || return 0
 
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
     log "$level" "command=$command_name output=$line"
   done <"$output_file"
 }
@@ -132,33 +134,31 @@ Version: ${SCRIPT_VERSION}
 Usage: macos_maintenance.sh [options]
 
 Default:
-  sudo maintain        Preview full standard maintenance plan
-  sudo maintain -y     Run full standard maintenance plan
+  maintain             Preview Homebrew maintenance
+  maintain -y          Apply Homebrew maintenance
 
-Standard plan:
-  --cleanup
-  --brew
-  --mas
-  --check-os-updates
-  --diagnostics
+Default plan: --brew. All other tasks are opt-in.
 
 Safety:
   Without -y, maintain runs in dry-run mode.
   Backup is opt-in only via --backup.
-  Homebrew, user cache cleanup, and mas run as the invoking sudo user when run with sudo.
+  Run as your normal user. The script refuses root execution.
+  A requested backup runs first; failure skips all remaining tasks.
 
 Options:
-  --cleanup                 Conservative user cache/log/tmp cleanup
+  --cleanup                 Opt-in user cache/tmp and maintenance-log cleanup
   --cleanup-downloads DAYS  Remove files older than DAYS in ~/Downloads (off by default)
-  --brew                    Run Homebrew update/upgrade/cleanup
+  --brew                    Run Homebrew update, upgrades, cleanup, and doctor
+  --brew-autoremove         Also remove unused formula dependencies (implies --brew)
+  --brew-greedy             Include self-updating/latest casks (implies --brew)
   --mas                     Run Mac App Store updates (mas upgrade)
   --check-os-updates        Check available macOS updates
   --apply-os-updates        Apply macOS updates (implies --check-os-updates)
-  --diagnostics             Print diagnostic info and known brew conflicts
+  --diagnostics             Check disk usage, Time Machine, and Homebrew health
   --backup                  Opt-in Restic backup; requires restic config/env
   --dry-run                 Preview actions without making changes (default)
   -y, --yes                 Apply selected tasks instead of dry-running
-  --verbose                 Enable verbose logging
+  --verbose                 Show command output on console (always saved in log)
   --help, -h                Show this help text
 
 Backup env:
@@ -168,6 +168,11 @@ Backup env:
   BACKUP_SOURCE             Optional; defaults to invoking user's home
   BACKUP_KEEP_LAST          Optional; must be 2 or 3; defaults to 3
   BACKUP_MIN_FREE_GB        Optional; minimum free space required on backup source filesystem; defaults to 10
+
+Logging:
+  Logs: ~/Library/Logs/maintain/maintain-TIMESTAMP-UNIQUE.log (mode 600).
+  LOG_LEVEL: error, warn, info (default), debug; file always includes all levels.
+  LOG_RETENTION_DAYS: positive integer, defaults to 30; applied with --cleanup -y.
 
 Command-resolution note:
   If 'sudo maintain --help' does not show this version/help, sudo is resolving a different
@@ -208,7 +213,8 @@ maintenance_home() { user_home "$(invoking_user)"; }
 run_cmd() {
   local description="$1"
   shift
-  local cmd="${1:-}" output_file status=0
+  local cmd="${1:-}" output_file status=0 started=$SECONDS
+  local failure_level=${COMMAND_FAILURE_LEVEL:-error}
 
   if [[ -z "$cmd" ]]; then
     log_error "Cannot run command for '$description': no command provided."
@@ -228,61 +234,35 @@ run_cmd() {
     return 0
   fi
 
-  output_file=$(mktemp)
+  output_file=$(mktemp "$RUN_TMP/command.XXXXXX") || { record_error "Cannot create command log"; return 1; }
   log_info "$description"
   log_debug "command=$(command_display "$@")"
 
   if "$@" >"$output_file" 2>&1; then
     log_command_output debug "$cmd" "$output_file"
     rm -f "$output_file"
+    log_info "command=$cmd state=SUCCESS exit_status=0 duration_seconds=$((SECONDS - started))"
     return 0
+  else
+    status=$?
   fi
 
-  status=$?
   log_command_output warn "$cmd" "$output_file"
   rm -f "$output_file"
 
-  log_error "Command failed with exit_status=$status: $description"
-  record_error "$description: exit_status=$status"
+  log "$failure_level" "command=$cmd state=FAILED exit_status=$status duration_seconds=$((SECONDS - started)): $description"
+  if [[ "$failure_level" == error ]]; then record_error "$description: exit_status=$status"; fi
   return "$status"
 }
 
 run_as_maintenance_user() {
-  local description="$1"
-  shift
-  local user
-  user=$(invoking_user)
-
-  if [[ $EUID -eq 0 && $user != root ]]; then
-    run_cmd "$description (as $user)" sudo -Hu "$user" env HOME="$(user_home "$user")" "$@"
-  else
-    if [[ $EUID -eq 0 && $DRY_RUN == false ]]; then
-      log_error "Refusing to run user-level task as root without SUDO_USER. Re-run as your user or via sudo from an admin account."
-      record_error "$description: refused root user-level execution without SUDO_USER"
-      return 1
-    fi
-
-    if [[ $EUID -eq 0 && $DRY_RUN == true ]]; then
-      run_cmd "$description (as current root context; no SUDO_USER detected for preview)" "$@"
-    else
-      run_cmd "$description" "$@"
-    fi
-  fi
+  run_cmd "$@"
 }
 
 capture_as_maintenance_user() {
   local output_file="$1"
   shift
-  local user status=0
-  user=$(invoking_user)
-
-  if [[ $EUID -eq 0 && $user != root ]]; then
-    sudo -Hu "$user" env HOME="$(user_home "$user")" "$@" >"$output_file" 2>&1 || status=$?
-  else
-    "$@" >"$output_file" 2>&1 || status=$?
-  fi
-
-  return "$status"
+  "$@" >"$output_file" 2>&1
 }
 
 bytes_for_path() {
@@ -312,7 +292,7 @@ should_skip_cache_path() {
   base=$(basename "$1")
 
   case "$base" in
-    *Safari* | com.apple.Safari* | *Firefox* | *Mozilla* | *Chrome* | *Chromium* | *Brave* | *Edge* | *Arc* | *Obsidian* | *GitHub* | restic)
+    *Safari* | *Firefox* | *Mozilla* | *Chrome* | *Chromium* | *Brave* | *Edge* | *Arc* | *Obsidian* | *GitHub* | restic)
       return 0
       ;;
     *)
@@ -340,7 +320,7 @@ cleanup_user_caches() {
       continue
     fi
 
-    run_as_maintenance_user "Removing cache item: $item" rm -rf "$item"
+    run_as_maintenance_user "Removing cache item: $item" rm -rf "$item" || return $?
     processed=$((processed + 1))
   done < <(find "$cache_root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
@@ -351,7 +331,7 @@ cleanup_user_caches() {
 cleanup_logs() {
   local home log_root output_file processed=0 before=0 after=0 status=0
   home=$(maintenance_home)
-  log_root="$home/Library/Logs"
+  log_root="$home/Library/Logs/maintain"
 
   [[ -d "$log_root" ]] || {
     log_info "No user logs to prune at $log_root."
@@ -359,13 +339,13 @@ cleanup_logs() {
   }
 
   before=$(bytes_for_path "$log_root")
-  output_file=$(mktemp)
+  output_file=$(mktemp "$RUN_TMP/command.XXXXXX")
 
   if $DRY_RUN; then
-    run_as_maintenance_user "Finding user logs older than 30 days under $log_root" find "$log_root" -type f -mtime +30 -print
-    capture_as_maintenance_user "$output_file" find "$log_root" -type f -mtime +30 -print || status=$?
+    run_as_maintenance_user "Finding maintenance logs older than $LOG_RETENTION_DAYS days under $log_root" find "$log_root" -type f -name 'maintain-*.log' ! -path "$LOGFILE" -mtime +"$LOG_RETENTION_DAYS" -print
+    capture_as_maintenance_user "$output_file" find "$log_root" -type f -name 'maintain-*.log' ! -path "$LOGFILE" -mtime +"$LOG_RETENTION_DAYS" -print || status=$?
   else
-    run_as_maintenance_user "Deleting user logs older than 30 days under $log_root" find "$log_root" -type f -mtime +30 -print -delete || status=$?
+    run_as_maintenance_user "Deleting maintenance logs older than $LOG_RETENTION_DAYS days under $log_root" find "$log_root" -type f -name 'maintain-*.log' ! -path "$LOGFILE" -mtime +"$LOG_RETENTION_DAYS" -print -delete || status=$?
   fi
 
   [[ -s "$output_file" ]] && processed=$(wc -l <"$output_file" | tr -d ' ')
@@ -380,13 +360,18 @@ cleanup_logs() {
 cleanup_tmpdir() {
   local tmp_root="${TMPDIR:-/tmp}" output_file processed=0 before=0 after=0 status=0
 
+  if [[ -z ${TMPDIR:-} || "$tmp_root" == /tmp || "$tmp_root" == /private/tmp || ! -O "$tmp_root" ]]; then
+    log_warn "Skipping temporary cleanup: no dedicated user-owned TMPDIR."
+    return 0
+  fi
+
   [[ -d "$tmp_root" ]] || {
     log_info "TMPDIR $tmp_root not found; skipping."
     return 0
   }
 
   before=$(bytes_for_path "$tmp_root")
-  output_file=$(mktemp)
+  output_file=$(mktemp "$RUN_TMP/command.XXXXXX")
 
   if $DRY_RUN; then
     run_as_maintenance_user "Finding temporary files older than 7 days in $tmp_root" find "$tmp_root" -mindepth 1 -maxdepth 2 -type f -mtime +7 -print
@@ -415,7 +400,7 @@ cleanup_downloads_run() {
   }
 
   before=$(bytes_for_path "$downloads_dir")
-  output_file=$(mktemp)
+  output_file=$(mktemp "$RUN_TMP/command.XXXXXX")
 
   if $DRY_RUN; then
     run_as_maintenance_user "Finding files older than ${cleanup_downloads_days}d in $downloads_dir" find "$downloads_dir" -type f -mtime +"$cleanup_downloads_days" -print
@@ -448,9 +433,11 @@ log_cleanup_summary() {
 run_cleanup() {
   local status=0
 
-  cleanup_user_caches || status=$?
-  cleanup_logs || status=$?
-  cleanup_tmpdir || status=$?
+  if $cleanup; then
+    cleanup_user_caches || status=$?
+    cleanup_logs || status=$?
+    cleanup_tmpdir || status=$?
+  fi
   if $cleanup_downloads; then cleanup_downloads_run || status=$?; fi
 
   log_cleanup_summary
@@ -459,43 +446,35 @@ run_cleanup() {
 }
 
 run_brew_updates() {
-  local status=0 formula_outdated cask_outdated cleanup_preview outdated_count cleanup_count
-
+  local status=0 cask_args=(--cask)
   if ! check_binary brew; then
     log_warn "Homebrew not installed; skipping brew maintenance."
     TASK_SKIP=$((TASK_SKIP + 1))
     return 0
   fi
-
-  run_as_maintenance_user "Updating Homebrew metadata" brew update || status=$?
-
-  formula_outdated=$(mktemp)
-  cask_outdated=$(mktemp)
-  cleanup_preview=$(mktemp)
-
-  capture_as_maintenance_user "$formula_outdated" brew outdated --formula --quiet || status=$?
-  capture_as_maintenance_user "$cask_outdated" brew outdated --cask --quiet || status=$?
-  capture_as_maintenance_user "$cleanup_preview" brew cleanup -n || true
-
-  outdated_count=$(($(wc -l <"$formula_outdated" | tr -d ' ') + $(wc -l <"$cask_outdated" | tr -d ' ')))
-  cleanup_count=$(grep -cve '^$' "$cleanup_preview" || true)
-
-  if ((outdated_count == 0 && cleanup_count == 0)); then
-    log_info "Homebrew: no upgrade or cleanup actions found."
+  if $brew_greedy; then cask_args+=(--greedy); fi
+  # Each dependency is checked explicitly: run_phase calls this in a conditional,
+  # where Bash errexit does not propagate into function bodies.
+  run_cmd "Updating Homebrew metadata" brew update || return $?
+  run_cmd "Listing outdated formulae" brew outdated --formula || return $?
+  run_cmd "Listing outdated casks" brew outdated "${cask_args[@]}" || return $?
+  run_cmd "Upgrading Homebrew formulae" brew upgrade --formula || status=$?
+  run_cmd "Upgrading Homebrew casks" brew upgrade "${cask_args[@]}" || status=$?
+  if ((status == 0)); then
+    if $brew_autoremove; then
+      run_cmd "Removing unused Homebrew dependencies" brew autoremove || status=$?
+    else
+      run_cmd "Previewing unused Homebrew dependencies" brew autoremove --dry-run || status=$?
+    fi
+    if ((status == 0)); then
+      run_cmd "Cleaning old Homebrew artifacts" brew cleanup || status=$?
+    fi
   else
-    log_info "Homebrew action summary: outdated=$outdated_count cleanup_candidates=$cleanup_count"
-    run_as_maintenance_user "Upgrading installed Homebrew packages" brew upgrade || status=$?
-    run_as_maintenance_user "Cleaning old Homebrew artifacts" brew cleanup || status=$?
+    log_warn "Skipping Homebrew cleanup and autoremove because an upgrade failed."
   fi
-
-  rm -f "$formula_outdated" "$cask_outdated" "$cleanup_preview"
-
-  if ((status != 0)); then
-    log_error "Homebrew maintenance ended with failures."
-    return "$status"
-  fi
-
-  return 0
+  COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor ||
+    log_warn "brew doctor reported potential issues; review the log."
+  return "$status"
 }
 
 run_mas_updates() {
@@ -587,7 +566,7 @@ validate_backup_config() {
 }
 
 run_backup() {
-  local source_path keep_last status=0
+  local source_path keep_last status=0 backup_args=()
 
   source_path="${BACKUP_SOURCE:-$(maintenance_home)}"
   keep_last="$BACKUP_KEEP_LAST"
@@ -600,7 +579,14 @@ run_backup() {
   validate_backup_config || return 1
   check_backup_disk_space "$source_path" "$BACKUP_MIN_FREE_GB" || return 1
 
-  run_cmd "Running encrypted Restic backup for $source_path" restic backup "$source_path" || status=$?
+  # Do not include a local repository or its password in the backup itself.
+  if [[ ${RESTIC_REPOSITORY:-} == /* ]]; then backup_args+=(--exclude "$RESTIC_REPOSITORY"); fi
+  if [[ -n ${RESTIC_PASSWORD_FILE:-} ]]; then backup_args+=(--exclude "$RESTIC_PASSWORD_FILE"); fi
+  run_cmd "Running encrypted Restic backup for $source_path" restic backup "${backup_args[@]}" "$source_path" || status=$?
+
+  if ((status == 0)); then
+    run_cmd "Checking Restic repository integrity" restic check || status=$?
+  fi
 
   if ((status == 0)); then
     run_cmd "Applying Restic retention policy: keep last $keep_last snapshots and prune" restic forget --keep-last "$keep_last" --prune || status=$?
@@ -614,64 +600,39 @@ run_backup() {
   return 0
 }
 
-run_brew_conflict_diagnostics() {
-  if ! check_binary brew; then
-    log_info "Brew diagnostics: brew not found."
-    return 0
-  fi
-
-  log_info "Brew diagnostics: checking deprecated/conflicting Docker completion formulae."
-
-  if brew list --formula 2>/dev/null | grep -qx 'docker-completion'; then
-    log_warn "docker-completion is installed and may conflict with 'brew link docker'. Suggested manual review: brew unlink docker-completion && brew link docker"
-  fi
-
-  brew doctor || log_warn "brew doctor reported issues; review output above."
-}
-
 run_diagnostics() {
-  log_info "Disk usage snapshot:"
-  df -h / || true
-
-  if check_binary tmutil; then
-    log_info "Time Machine status:"
-    tmutil status || true
+  local status=0
+  run_cmd "Disk usage snapshot" df -h / || status=$?
+  if check_binary tmutil; then run_cmd "Time Machine status" tmutil status || status=$?; fi
+  if check_binary brew; then
+    COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor ||
+      log_warn "brew doctor reported potential issues; review the log."
   fi
-
-  if check_binary log && [[ $(uname -s) == Darwin ]]; then
-    log_info "Recent shutdown causes:"
-    log show --predicate 'eventMessage CONTAINS "Previous shutdown cause"' --last 1d --info --debug | tail -n 20 || true
-  fi
-
-  run_brew_conflict_diagnostics
+  return "$status"
 }
 
 apply_standard_plan_if_needed() {
   if ! $TASK_SELECTED; then
-    cleanup=true
     brew_update=true
-    mas_update=true
-    os_update_check=true
-    os_update_apply=false
-    diagnostics=true
   fi
 }
 
 build_selected_phases() {
   SELECTED_PHASES=()
 
-  if $cleanup; then SELECTED_PHASES+=("Cleanup"); fi
+  if $backup; then SELECTED_PHASES+=("System Backup"); fi
+  if $cleanup || $cleanup_downloads; then SELECTED_PHASES+=("Cleanup"); fi
   if $brew_update; then SELECTED_PHASES+=("Homebrew Maintenance"); fi
   if $mas_update; then SELECTED_PHASES+=("Mac App Store Maintenance"); fi
   if $os_update_check; then SELECTED_PHASES+=("macOS Update Check"); fi
   if $diagnostics; then SELECTED_PHASES+=("Diagnostics"); fi
-  if $backup; then SELECTED_PHASES+=("System Backup"); fi
 }
 
 run_phase() {
   local phase="$1"
   shift
-  local start end duration status=0 bar
+  local start end duration status=0 bar skipped_before=$TASK_SKIP
+  CURRENT_PHASE="$phase"
 
   PHASE_INDEX=$((PHASE_INDEX + 1))
   TASK_TOTAL=$((TASK_TOTAL + 1))
@@ -685,12 +646,14 @@ run_phase() {
   end=$(date +%s)
   duration=$((end - start))
 
-  if ((status == 0)); then
+  if ((TASK_SKIP > skipped_before)); then
+    log_warn "phase=$phase state=SKIPPED duration_seconds=$duration"
+  elif ((status == 0)); then
     TASK_OK=$((TASK_OK + 1))
-    log_info "phase=$phase state=completed duration_seconds=$duration"
+    log_info "phase=$phase state=SUCCESS duration_seconds=$duration"
   else
     TASK_FAIL=$((TASK_FAIL + 1))
-    log_error "phase=$phase state=incomplete duration_seconds=$duration exit_status=$status"
+    log_error "phase=$phase state=FAILED duration_seconds=$duration exit_status=$status"
   fi
 
   return 0
@@ -709,7 +672,7 @@ print_final_summary() {
 
   log_info "summary requested=$TASK_TOTAL completed_successfully=$TASK_OK incomplete=$incomplete failed=$TASK_FAIL skipped=$TASK_SKIP errors={$errors_joined}"
 
-  if ((TASK_FAIL > 0)); then
+  if ((TASK_FAIL > 0 || ${RUN_RESULT:-0} != 0)); then
     log_error "Maintenance ended with incomplete phases. Review red flags above."
     return 1
   fi
@@ -719,7 +682,8 @@ print_final_summary() {
     return 0
   fi
 
-  log_info "Maintenance green across selected phases."
+  if $DRY_RUN; then log_info "Maintenance preview finished; no maintenance commands applied."
+  else log_info "Maintenance completed successfully."; fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -741,6 +705,16 @@ while [[ $# -gt 0 ]]; do
         exit 1
       }
       shift
+      ;;
+    --brew-autoremove)
+      brew_autoremove=true
+      brew_update=true
+      mark_task
+      ;;
+    --brew-greedy)
+      brew_greedy=true
+      brew_update=true
+      mark_task
       ;;
     --brew)
       brew_update=true
@@ -771,11 +745,9 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       ;;
     -y | --yes)
-      YES=true
       DRY_RUN=false
       ;;
     --verbose)
-      VERBOSE=true
       LOG_LEVEL=debug
       ;;
     --help | -h)
@@ -791,18 +763,71 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Homebrew and all user data tasks must retain the real user's identity.
+if ((EUID == 0)); then
+  log_error "Run maintain as your normal user, without sudo. System updates request sudo separately."
+  exit 1
+fi
+case "$LOG_LEVEL" in error|warn|info|debug) ;; *) log_error "Invalid LOG_LEVEL"; exit 64 ;; esac
+is_positive_int "$LOG_RETENTION_DAYS" || { log_error "Invalid LOG_RETENTION_DAYS"; exit 64; }
+is_positive_int "$BACKUP_MIN_FREE_GB" || { log_error "Invalid BACKUP_MIN_FREE_GB"; exit 64; }
 apply_standard_plan_if_needed
 build_selected_phases
 ensure_macos_or_preview
 
-log_info "Starting macOS maintenance version $SCRIPT_VERSION (dry-run=$DRY_RUN, verbose=$VERBOSE, user=$(invoking_user))."
+umask 077
+LOGDIR="$(maintenance_home)/Library/Logs/maintain"
+if ! mkdir -p "$LOGDIR" || ! chmod 700 "$LOGDIR"; then
+  log_error "Cannot create private log directory: $LOGDIR"
+  exit 1
+fi
+LOGFILE=$(mktemp "$LOGDIR/maintain-$(date '+%Y%m%dT%H%M%S')-XXXXXX.log")
+exec 9>>"$LOGFILE"
+RUN_TMP=$(mktemp -d)
+
+finish() {
+  local result=$? pending
+  RUN_RESULT=$result
+  trap - EXIT
+  if ((result != 0)); then
+    log_error "Run stopped during phase=$CURRENT_PHASE exit_status=$result"
+    for pending in "$RUN_TMP"/command.*; do
+      if [[ -f "$pending" ]]; then log_command_output warn interrupted-command "$pending"; fi
+    done
+    if ((TASK_TOTAL > TASK_OK + TASK_FAIL + TASK_SKIP)); then
+      TASK_FAIL=$((TASK_FAIL + 1))
+      record_error "$CURRENT_PHASE: interrupted exit_status=$result"
+    fi
+    TASK_SKIP=$((TASK_SKIP + ${#SELECTED_PHASES[@]} - TASK_TOTAL))
+    TASK_TOTAL=${#SELECTED_PHASES[@]}
+  fi
+  CURRENT_PHASE=summary
+  print_final_summary || { if ((result == 0)); then result=1; fi; }
+  log_info "run_exit_status=$result duration_seconds=$((SECONDS - RUN_START)) log=$LOGFILE"
+  rm -rf "$RUN_TMP"
+  exit "$result"
+}
+trap finish EXIT
+trap 'log_error "Run interrupted by SIGINT"; exit 130' INT
+trap 'log_error "Run interrupted by SIGTERM"; exit 143' TERM
+
+log_info "Starting macOS maintenance version $SCRIPT_VERSION (dry-run=$DRY_RUN, user=$(invoking_user)). Log: $LOGFILE"
 $DRY_RUN && log_info "Plan mode: preview only. Re-run with -y/--yes to apply."
 
-if $cleanup; then run_phase "Cleanup" run_cleanup; fi
+if $backup; then
+  run_phase "System Backup" run_backup
+  if ((TASK_FAIL > 0)); then
+    TASK_SKIP=$((${#SELECTED_PHASES[@]} - 1))
+    TASK_TOTAL=${#SELECTED_PHASES[@]}
+    log_error "Backup failed; remaining $TASK_SKIP phases SKIPPED."
+    exit 1
+  fi
+fi
+if $cleanup || $cleanup_downloads; then run_phase "Cleanup" run_cleanup; fi
 if $brew_update; then run_phase "Homebrew Maintenance" run_brew_updates; fi
 if $mas_update; then run_phase "Mac App Store Maintenance" run_mas_updates; fi
 if $os_update_check; then run_phase "macOS Update Check" run_os_updates; fi
 if $diagnostics; then run_phase "Diagnostics" run_diagnostics; fi
-if $backup; then run_phase "System Backup" run_backup; fi
 
-print_final_summary
+if ((TASK_FAIL > 0)); then exit 1; fi
+exit 0

@@ -72,3 +72,9 @@ A curated collection of reusable modules and utilities for PowerShell, Python, Z
 ## License
 
 This project is licensed under the terms specified in [LICENSE](LICENSE).
+
+## macOS maintenance runner
+
+See [usage, logging, installation, and tests](zsh/README.md). The canonical
+`zsh/macos_maintenance.sh` defaults to a Homebrew-only preview; use `-y` to apply
+and run as your normal user without sudo.
