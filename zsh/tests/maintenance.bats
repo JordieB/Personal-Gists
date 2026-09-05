@@ -24,18 +24,18 @@ MOCK
   chmod +x "$BATS_TEST_TMPDIR/bin/"*
 }
 
-@test "default preview runs no Homebrew commands" {
-  run /bin/bash "$SCRIPT"
+@test "explicit preview runs no Homebrew commands" {
+  run /bin/bash "$SCRIPT" --dry-run
   [ "$status" -eq 0 ]
   [ ! -s "$CALLS" ]
   [[ "$output" == *'preview finished'* ]]
   [[ "$output" != *'Removing cache'* ]]
 }
 
-@test "apply runs separate upgrades, previews autoremove, and keeps full private logs" {
+@test "apply runs separate upgrades, removes unused dependencies, and keeps full private logs" {
   run /bin/bash "$SCRIPT" -y
   [ "$status" -eq 0 ]
-  expected=$'update\noutdated --formula\noutdated --cask\nupgrade --formula\nupgrade --cask\nautoremove --dry-run\ncleanup\ndoctor'
+  expected=$'update\noutdated --formula\noutdated --cask --greedy\nupgrade --formula --no-ask\nupgrade --cask --greedy --no-ask\nautoremove\ncleanup\ndoctor'
   [ "$(cat "$CALLS")" = "$expected" ]
   log_file=$(find "$HOME/Library/Logs/maintain" -name '*.log')
   /usr/bin/grep -q 'stdout for update' "$log_file"
@@ -55,7 +55,7 @@ MOCK
 }
 
 @test "failed upgrade skips cleanup but still runs doctor" {
-  export FAIL_COMMAND='upgrade --formula'
+  export FAIL_COMMAND='upgrade --formula --no-ask'
   run /bin/bash "$SCRIPT" -y
   [ "$status" -eq 1 ]
   ! /usr/bin/grep -q '^cleanup$' "$CALLS"
@@ -71,10 +71,10 @@ MOCK
   [[ "$output" == *'failed=0'* ]]
 }
 
-@test "greedy and autoremove are explicit opt-ins" {
+@test "greedy and autoremove can be explicitly enabled" {
   run /bin/bash "$SCRIPT" --brew-greedy --brew-autoremove -y
   [ "$status" -eq 0 ]
-  /usr/bin/grep -qx 'upgrade --cask --greedy' "$CALLS"
+  /usr/bin/grep -qx 'upgrade --cask --greedy --no-ask' "$CALLS"
   /usr/bin/grep -qx 'autoremove' "$CALLS"
 }
 
@@ -155,4 +155,61 @@ MOCK
   [ "$status" -eq 0 ]
   [ ! -e "$HOME/Downloads/old" ]
   [ -e "$HOME/Library/Caches/example/keep" ]
+}
+
+@test "default performs maintenance and preserves upgrade confirmation" {
+  run /bin/bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qx 'upgrade --formula --ask' "$CALLS"
+  /usr/bin/grep -qx 'upgrade --cask --greedy --ask' "$CALLS"
+  /usr/bin/grep -qx 'autoremove' "$CALLS"
+}
+
+@test "exclusions narrow the default scope" {
+  run /bin/bash "$SCRIPT" --no-brew-greedy --no-brew-autoremove
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qx 'upgrade --cask --ask' "$CALLS"
+  /usr/bin/grep -qx 'autoremove --dry-run' "$CALLS"
+}
+
+@test "dry run takes precedence over yes and reports planned not completed" {
+  run /bin/bash "$SCRIPT" --dry-run -y
+  [ "$status" -eq 0 ]
+  [ ! -s "$CALLS" ]
+  [[ "$output" == *'completed_successfully=0 planned=1'* ]]
+  [[ "$output" != *'state=SUCCESS'* ]]
+}
+
+@test "doctor health warning is distinct from action success" {
+  export DOCTOR_WARN=true
+  run /bin/bash "$SCRIPT" -y
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'health_warnings=1'* ]]
+  [[ "$output" == *'health warnings require review'* ]]
+}
+
+@test "prompt without newline is visible before an answer is supplied" {
+  cat > "$BATS_TEST_TMPDIR/bin/brew" <<'MOCK'
+#!/bin/bash
+if [[ "$1" == upgrade ]]; then
+  printf 'Proceed now? '
+  read -r answer
+  [[ "$answer" == y ]] || exit 42
+fi
+MOCK
+  chmod +x "$BATS_TEST_TMPDIR/bin/brew"
+  # A FIFO leaves stdin open while the test waits to see the prompt.
+  mkfifo "$BATS_TEST_TMPDIR/input"
+  /bin/bash "$SCRIPT" < "$BATS_TEST_TMPDIR/input" > "$BATS_TEST_TMPDIR/output" 2>&1 &
+  runner=$!
+  exec 8> "$BATS_TEST_TMPDIR/input"
+  seen=false
+  for i in {1..50}; do
+    if /usr/bin/grep -q 'Proceed now?' "$BATS_TEST_TMPDIR/output"; then seen=true; break; fi
+    sleep 0.1
+  done
+  printf 'y\ny\n' >&8
+  exec 8>&-
+  wait "$runner"
+  [ "$seen" = true ]
 }

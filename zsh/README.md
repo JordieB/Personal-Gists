@@ -3,14 +3,14 @@
 `macos_maintenance.sh` is the canonical runner. The script under
 `snippets/zsh/` forwards to it. The system-maintenance plugin is a separate stub.
 
-Run as your normal user, without `sudo`. Version 3 defaults to **Homebrew only**
-and previews actions until `-y` is supplied. It refuses root execution; explicitly
+Run as your normal user, without `sudo`. Version 3.1 defaults to **interactive Homebrew maintenance**, including greedy
+cask upgrades and unused-dependency removal. Use `--dry-run` for a preview. It refuses root execution; explicitly
 requested macOS updates invoke sudo for the system command.
 
 ```sh
-./zsh/macos_maintenance.sh                 # Preview Homebrew maintenance
-./zsh/macos_maintenance.sh -y              # Apply Homebrew maintenance
-./zsh/macos_maintenance.sh -y --verbose    # Also print full command output
+./zsh/macos_maintenance.sh                 # Run interactive Homebrew maintenance
+./zsh/macos_maintenance.sh -y              # Approve Homebrew upgrade confirmations
+./zsh/macos_maintenance.sh -y --verbose    # Also print command details
 ./zsh/macos_maintenance.sh --brew-autoremove -y
 ./zsh/macos_maintenance.sh --brew-greedy -y
 ./zsh/macos_maintenance.sh --backup --brew -y
@@ -21,28 +21,34 @@ requested macOS updates invoke sudo for the system command.
 
 1. Update metadata; failure stops the Homebrew phase immediately.
 2. List outdated formulae and casks; listing failures also stop the phase.
-3. Upgrade formulae and casks separately, respecting Homebrew's pinned packages.
-4. Preview unused dependencies. `--brew-autoremove` opts into removal.
+3. Upgrade formulae and casks separately, including greedy casks and respecting
+   Homebrew's pinned packages. Confirmation prompts remain visible; `-y` supplies
+   Homebrew's `--no-ask`. Installer password prompts may still occur.
+4. Remove unused dependencies. `--no-brew-autoremove` selects a preview instead.
 5. Run normal cleanup only when upgrades and the dependency step succeeded.
 6. Run doctor. Its warnings are recorded without failing successful upgrades.
 
-`--brew-greedy` includes casks marked self-updating or latest. It is opt-in.
+Greedy upgrades include casks marked self-updating or latest by default.
+`--no-brew-greedy` excludes this extra coverage. The positive
+`--brew-greedy` and `--brew-autoremove` flags remain supported.
 Preview mode executes no Homebrew commands, so its plan does not list actual
 outdated packages. Applying upgrades can affect running applications and services.
 
 ## Logs and failures
 
 Each run creates a private (0600) log in `~/Library/Logs/maintain/` (0700).
-Logs contain timestamps with timezone, severity, phase, command output, exit status,
-and durations. Full command output is saved even when the console is quiet;
-`--verbose` displays it on the console too. Output is collected per command and
-written after that command finishes. An interrupted command may have only partial
-output available. Password environment variables are not dumped.
+Logs contain timestamped phase/status records alongside raw command output.
+Command output streams immediately to the console and file, including prompts
+without newlines. Stdin remains connected for interactive responses. `--verbose`
+adds command details; it is not required to see progress or prompts. Both command
+and logging failures are checked. Password environment variables are not dumped.
 
 An EXIT handler writes a final summary, including on handled SIGINT/SIGTERM.
 As with any script, SIGKILL or power loss cannot run the handler. Failed required
 steps return a nonzero exit. Missing optional tools count as skipped, not successful.
-`brew doctor` warnings remain warnings. The log directory must be writable.
+`brew doctor` warnings remain warnings and are counted separately in the final
+health summary. Preview phases are PLANNED, never counted as completed.
+`--dry-run` takes precedence over `-y` regardless of argument order. The log directory must be writable.
 
 `LOG_LEVEL` controls console filtering (`error`, `warn`, `info`, `debug`).
 `LOG_RETENTION_DAYS` defaults to 30. `--cleanup -y` prunes only matching old
@@ -86,7 +92,7 @@ Remove stale aliases. To also replace an old `/usr/local/bin/maintain` copy:
 sudo install -m 755 /absolute/path/to/Personal-Gists/zsh/macos_maintenance.sh /usr/local/bin/maintain
 ```
 
-Run `maintain --help` in a new shell and verify version 3.0.0. Run maintenance
+Run `maintain --help` in a new shell and verify version 3.1.0. Run maintenance
 without sudo. Installing a copy requires repeating the install after future edits.
 
 ## Validation and sources

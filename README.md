@@ -76,5 +76,5 @@ This project is licensed under the terms specified in [LICENSE](LICENSE).
 ## macOS maintenance runner
 
 See [usage, logging, installation, and tests](zsh/README.md). The canonical
-`zsh/macos_maintenance.sh` defaults to a Homebrew-only preview; use `-y` to apply
-and run as your normal user without sudo.
+`zsh/macos_maintenance.sh` runs interactive Homebrew maintenance by default. Use `--dry-run` to preview
+or `-y` to approve upgrade confirmations. Run as your normal user without sudo.

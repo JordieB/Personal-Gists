@@ -5,11 +5,12 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_VERSION="3.0.0"
+readonly SCRIPT_VERSION="3.1.0"
 readonly SCRIPT_NAME="macos_maintenance.sh"
 
 LOG_LEVEL=${LOG_LEVEL:-info}
-DRY_RUN=true
+DRY_RUN=false
+YES=false
 cleanup=false
 cleanup_downloads=false
 cleanup_downloads_days=30
@@ -20,8 +21,8 @@ os_update_apply=false
 diagnostics=false
 backup=false
 TASK_SELECTED=false
-brew_autoremove=false
-brew_greedy=false
+brew_autoremove=true
+brew_greedy=true
 LOGFILE=""
 RUN_TMP=""
 CURRENT_PHASE=startup
@@ -35,6 +36,8 @@ BACKUP_MIN_FREE_GB=${BACKUP_MIN_FREE_GB:-10}
 
 TASK_TOTAL=0
 TASK_OK=0
+TASK_PLANNED=0
+HEALTH_WARNINGS=0
 TASK_FAIL=0
 TASK_SKIP=0
 PHASE_INDEX=0
@@ -134,13 +137,14 @@ Version: ${SCRIPT_VERSION}
 Usage: macos_maintenance.sh [options]
 
 Default:
-  maintain             Preview Homebrew maintenance
-  maintain -y          Apply Homebrew maintenance
+  maintain             Run interactive Homebrew maintenance
+  maintain -y          Approve Homebrew upgrades without confirmation
 
 Default plan: --brew. All other tasks are opt-in.
 
 Safety:
-  Without -y, maintain runs in dry-run mode.
+  Maintenance runs by default. Use --dry-run to preview without execution.
+  App upgrades can close/reopen apps and request administrator passwords.
   Backup is opt-in only via --backup.
   Run as your normal user. The script refuses root execution.
   A requested backup runs first; failure skips all remaining tasks.
@@ -149,16 +153,18 @@ Options:
   --cleanup                 Opt-in user cache/tmp and maintenance-log cleanup
   --cleanup-downloads DAYS  Remove files older than DAYS in ~/Downloads (off by default)
   --brew                    Run Homebrew update, upgrades, cleanup, and doctor
-  --brew-autoremove         Also remove unused formula dependencies (implies --brew)
-  --brew-greedy             Include self-updating/latest casks (implies --brew)
+  --brew-autoremove         Remove unused formula dependencies (default)
+  --brew-greedy             Include self-updating/latest casks (default)
+  --no-brew-autoremove      Preview unused dependencies instead of removing them
+  --no-brew-greedy          Exclude greedy cask upgrades
   --mas                     Run Mac App Store updates (mas upgrade)
   --check-os-updates        Check available macOS updates
   --apply-os-updates        Apply macOS updates (implies --check-os-updates)
   --diagnostics             Check disk usage, Time Machine, and Homebrew health
   --backup                  Opt-in Restic backup; requires restic config/env
-  --dry-run                 Preview actions without making changes (default)
-  -y, --yes                 Apply selected tasks instead of dry-running
-  --verbose                 Show command output on console (always saved in log)
+  --dry-run                 Preview actions without making changes
+  -y, --yes                 Approve Homebrew upgrade confirmations; does not override --dry-run
+  --verbose                 Show additional command details; output always streams live
   --help, -h                Show this help text
 
 Backup env:
@@ -213,7 +219,7 @@ maintenance_home() { user_home "$(invoking_user)"; }
 run_cmd() {
   local description="$1"
   shift
-  local cmd="${1:-}" output_file status=0 started=$SECONDS
+  local cmd="${1:-}" status=0 started=$SECONDS
   local failure_level=${COMMAND_FAILURE_LEVEL:-error}
 
   if [[ -z "$cmd" ]]; then
@@ -234,21 +240,26 @@ run_cmd() {
     return 0
   fi
 
-  output_file=$(mktemp "$RUN_TMP/command.XXXXXX") || { record_error "Cannot create command log"; return 1; }
   log_info "$description"
   log_debug "command=$(command_display "$@")"
-
-  if "$@" >"$output_file" 2>&1; then
-    log_command_output debug "$cmd" "$output_file"
-    rm -f "$output_file"
+  # Keep stdin attached for prompts; stream bytes (including prompts without a
+  # newline) immediately. Capture both pipeline statuses before another command.
+  local pipeline_status=()
+  if "$@" 2>&1 | tee -a "$LOGFILE"; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+  status=${pipeline_status[0]}
+  if ((pipeline_status[1] != 0)); then
+    log_error "Failed to save command output: $cmd"
+    record_error "$description: output logging failed"
+    return 1
+  fi
+  if ((status == 0)); then
     log_info "command=$cmd state=SUCCESS exit_status=0 duration_seconds=$((SECONDS - started))"
     return 0
-  else
-    status=$?
   fi
-
-  log_command_output warn "$cmd" "$output_file"
-  rm -f "$output_file"
 
   log "$failure_level" "command=$cmd state=FAILED exit_status=$status duration_seconds=$((SECONDS - started)): $description"
   if [[ "$failure_level" == error ]]; then record_error "$description: exit_status=$status"; fi
@@ -446,7 +457,8 @@ run_cleanup() {
 }
 
 run_brew_updates() {
-  local status=0 cask_args=(--cask)
+  local status=0 cask_args=(--cask) upgrade_args=(--ask)
+  if $YES; then upgrade_args=(--no-ask); fi
   if ! check_binary brew; then
     log_warn "Homebrew not installed; skipping brew maintenance."
     TASK_SKIP=$((TASK_SKIP + 1))
@@ -458,8 +470,8 @@ run_brew_updates() {
   run_cmd "Updating Homebrew metadata" brew update || return $?
   run_cmd "Listing outdated formulae" brew outdated --formula || return $?
   run_cmd "Listing outdated casks" brew outdated "${cask_args[@]}" || return $?
-  run_cmd "Upgrading Homebrew formulae" brew upgrade --formula || status=$?
-  run_cmd "Upgrading Homebrew casks" brew upgrade "${cask_args[@]}" || status=$?
+  run_cmd "Upgrading Homebrew formulae" brew upgrade --formula "${upgrade_args[@]}" || status=$?
+  run_cmd "Upgrading Homebrew casks" brew upgrade "${cask_args[@]}" "${upgrade_args[@]}" || status=$?
   if ((status == 0)); then
     if $brew_autoremove; then
       run_cmd "Removing unused Homebrew dependencies" brew autoremove || status=$?
@@ -472,8 +484,10 @@ run_brew_updates() {
   else
     log_warn "Skipping Homebrew cleanup and autoremove because an upgrade failed."
   fi
-  COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor ||
+  if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor; then
+    HEALTH_WARNINGS=$((HEALTH_WARNINGS + 1))
     log_warn "brew doctor reported potential issues; review the log."
+  fi
   return "$status"
 }
 
@@ -605,8 +619,10 @@ run_diagnostics() {
   run_cmd "Disk usage snapshot" df -h / || status=$?
   if check_binary tmutil; then run_cmd "Time Machine status" tmutil status || status=$?; fi
   if check_binary brew; then
-    COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor ||
+    if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor; then
+      HEALTH_WARNINGS=$((HEALTH_WARNINGS + 1))
       log_warn "brew doctor reported potential issues; review the log."
+    fi
   fi
   return "$status"
 }
@@ -636,7 +652,7 @@ run_phase() {
 
   PHASE_INDEX=$((PHASE_INDEX + 1))
   TASK_TOTAL=$((TASK_TOTAL + 1))
-  bar=$(progress_bar "$PHASE_INDEX" "${#SELECTED_PHASES[@]}")
+  bar=$(progress_bar "$((PHASE_INDEX - 1))" "${#SELECTED_PHASES[@]}")
   start=$(date +%s)
 
   log_info "progress=$bar phase=$phase state=starting"
@@ -648,6 +664,9 @@ run_phase() {
 
   if ((TASK_SKIP > skipped_before)); then
     log_warn "phase=$phase state=SKIPPED duration_seconds=$duration"
+  elif ((status == 0)) && $DRY_RUN; then
+    TASK_PLANNED=$((TASK_PLANNED + 1))
+    log_info "phase=$phase state=PLANNED actions_executed=0"
   elif ((status == 0)); then
     TASK_OK=$((TASK_OK + 1))
     log_info "phase=$phase state=SUCCESS duration_seconds=$duration"
@@ -670,7 +689,7 @@ print_final_summary() {
     done
   fi
 
-  log_info "summary requested=$TASK_TOTAL completed_successfully=$TASK_OK incomplete=$incomplete failed=$TASK_FAIL skipped=$TASK_SKIP errors={$errors_joined}"
+  log_info "summary requested=$TASK_TOTAL completed_successfully=$TASK_OK planned=$TASK_PLANNED health_warnings=$HEALTH_WARNINGS incomplete=$incomplete failed=$TASK_FAIL skipped=$TASK_SKIP errors={$errors_joined}"
 
   if ((TASK_FAIL > 0 || ${RUN_RESULT:-0} != 0)); then
     log_error "Maintenance ended with incomplete phases. Review red flags above."
@@ -683,6 +702,7 @@ print_final_summary() {
   fi
 
   if $DRY_RUN; then log_info "Maintenance preview finished; no maintenance commands applied."
+  elif ((HEALTH_WARNINGS > 0)); then log_warn "Maintenance actions completed; health warnings require review."
   else log_info "Maintenance completed successfully."; fi
 }
 
@@ -705,6 +725,16 @@ while [[ $# -gt 0 ]]; do
         exit 1
       }
       shift
+      ;;
+    --no-brew-autoremove)
+      brew_autoremove=false
+      brew_update=true
+      mark_task
+      ;;
+    --no-brew-greedy)
+      brew_greedy=false
+      brew_update=true
+      mark_task
       ;;
     --brew-autoremove)
       brew_autoremove=true
@@ -745,7 +775,7 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       ;;
     -y | --yes)
-      DRY_RUN=false
+      YES=true
       ;;
     --verbose)
       LOG_LEVEL=debug
@@ -794,7 +824,7 @@ finish() {
     for pending in "$RUN_TMP"/command.*; do
       if [[ -f "$pending" ]]; then log_command_output warn interrupted-command "$pending"; fi
     done
-    if ((TASK_TOTAL > TASK_OK + TASK_FAIL + TASK_SKIP)); then
+    if ((TASK_TOTAL > TASK_OK + TASK_PLANNED + TASK_FAIL + TASK_SKIP)); then
       TASK_FAIL=$((TASK_FAIL + 1))
       record_error "$CURRENT_PHASE: interrupted exit_status=$result"
     fi
@@ -812,7 +842,7 @@ trap 'log_error "Run interrupted by SIGINT"; exit 130' INT
 trap 'log_error "Run interrupted by SIGTERM"; exit 143' TERM
 
 log_info "Starting macOS maintenance version $SCRIPT_VERSION (dry-run=$DRY_RUN, user=$(invoking_user)). Log: $LOGFILE"
-$DRY_RUN && log_info "Plan mode: preview only. Re-run with -y/--yes to apply."
+$DRY_RUN && log_info "Plan mode: preview only. Omit --dry-run to perform maintenance."
 
 if $backup; then
   run_phase "System Backup" run_backup
