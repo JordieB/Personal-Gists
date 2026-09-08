@@ -5,7 +5,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_VERSION="3.1.0"
+readonly SCRIPT_VERSION="3.2.0"
 readonly SCRIPT_NAME="macos_maintenance.sh"
 
 LOG_LEVEL=${LOG_LEVEL:-info}
@@ -19,8 +19,10 @@ mas_update=false
 os_update_check=false
 os_update_apply=false
 diagnostics=false
+diagnostics_shutdown_cause=false
 backup=false
 TASK_SELECTED=false
+PRESET=""
 brew_autoremove=true
 brew_greedy=true
 LOGFILE=""
@@ -43,6 +45,7 @@ TASK_SKIP=0
 PHASE_INDEX=0
 ERROR_SUMMARY=()
 SELECTED_PHASES=()
+RUN_COMMAND_FAILURE_KIND=""
 
 CLEANUP_AREAS=()
 CLEANUP_ITEMS=0
@@ -137,10 +140,10 @@ Version: ${SCRIPT_VERSION}
 Usage: macos_maintenance.sh [options]
 
 Default:
-  maintain             Run interactive Homebrew maintenance
-  maintain -y          Approve Homebrew upgrades without confirmation
+  maintain             Run the quick maintenance preset
+  maintain -y          Run quick maintenance and approve Homebrew prompts
 
-Default plan: --brew. All other tasks are opt-in.
+Quick plan: cleanup, Homebrew, App Store updates, macOS update check, and diagnostics.
 
 Safety:
   Maintenance runs by default. Use --dry-run to preview without execution.
@@ -150,7 +153,9 @@ Safety:
   A requested backup runs first; failure skips all remaining tasks.
 
 Options:
-  --cleanup                 Opt-in user cache/tmp and maintenance-log cleanup
+  --quick                   Select the default quick maintenance preset
+  --comprehensive           Select quick tasks plus recent shutdown-cause diagnostics
+  --cleanup                 Run user cache/tmp and maintenance-log cleanup
   --cleanup-downloads DAYS  Remove files older than DAYS in ~/Downloads (off by default)
   --brew                    Run Homebrew update, upgrades, cleanup, and doctor
   --brew-autoremove         Remove unused formula dependencies (default)
@@ -178,12 +183,13 @@ Backup env:
 Logging:
   Logs: ~/Library/Logs/maintain/maintain-TIMESTAMP-UNIQUE.log (mode 600).
   LOG_LEVEL: error, warn, info (default), debug; file always includes all levels.
-  LOG_RETENTION_DAYS: positive integer, defaults to 30; applied with --cleanup -y.
+  LOG_RETENTION_DAYS: positive integer, defaults to 30; applied whenever cleanup runs.
 
-Command-resolution note:
-  If 'sudo maintain --help' does not show this version/help, sudo is resolving a different
-  command than your shell alias. Use the absolute script path or install a root-visible
-  wrapper that execs this file; do not continue with the mismatched command.
+Selection:
+  With no task flags, --quick is selected. Explicit task flags alone select only
+  those tasks. With a preset, explicit task flags are additive; the last preset wins.
+  Backup, Downloads deletion, and OS update installation are always explicit.
+
 USAGE
 }
 
@@ -221,16 +227,19 @@ run_cmd() {
   shift
   local cmd="${1:-}" status=0 started=$SECONDS
   local failure_level=${COMMAND_FAILURE_LEVEL:-error}
+  RUN_COMMAND_FAILURE_KIND=""
 
   if [[ -z "$cmd" ]]; then
     log_error "Cannot run command for '$description': no command provided."
     record_error "$description: no command provided"
+    RUN_COMMAND_FAILURE_KIND="command"
     return 64
   fi
 
   if ! check_binary "$cmd"; then
     log_error "Cannot run '$cmd': command not found. '$description' was not attempted."
     record_error "$description: command not found: $cmd"
+    RUN_COMMAND_FAILURE_KIND="command"
     return 127
   fi
 
@@ -254,6 +263,7 @@ run_cmd() {
   if ((pipeline_status[1] != 0)); then
     log_error "Failed to save command output: $cmd"
     record_error "$description: output logging failed"
+    RUN_COMMAND_FAILURE_KIND="logging"
     return 1
   fi
   if ((status == 0)); then
@@ -263,6 +273,7 @@ run_cmd() {
 
   log "$failure_level" "command=$cmd state=FAILED exit_status=$status duration_seconds=$((SECONDS - started)): $description"
   if [[ "$failure_level" == error ]]; then record_error "$description: exit_status=$status"; fi
+  RUN_COMMAND_FAILURE_KIND="command"
   return "$status"
 }
 
@@ -356,6 +367,8 @@ cleanup_logs() {
     run_as_maintenance_user "Finding maintenance logs older than $LOG_RETENTION_DAYS days under $log_root" find "$log_root" -type f -name 'maintain-*.log' ! -path "$LOGFILE" -mtime +"$LOG_RETENTION_DAYS" -print
     capture_as_maintenance_user "$output_file" find "$log_root" -type f -name 'maintain-*.log' ! -path "$LOGFILE" -mtime +"$LOG_RETENTION_DAYS" -print || status=$?
   else
+    capture_as_maintenance_user "$output_file" find "$log_root" -type f -name 'maintain-*.log' ! -path "$LOGFILE" -mtime +"$LOG_RETENTION_DAYS" -print || status=$?
+    ((status == 0)) || { rm -f "$output_file"; return "$status"; }
     run_as_maintenance_user "Deleting maintenance logs older than $LOG_RETENTION_DAYS days under $log_root" find "$log_root" -type f -name 'maintain-*.log' ! -path "$LOGFILE" -mtime +"$LOG_RETENTION_DAYS" -print -delete || status=$?
   fi
 
@@ -388,6 +401,8 @@ cleanup_tmpdir() {
     run_as_maintenance_user "Finding temporary files older than 7 days in $tmp_root" find "$tmp_root" -mindepth 1 -maxdepth 2 -type f -mtime +7 -print
     capture_as_maintenance_user "$output_file" find "$tmp_root" -mindepth 1 -maxdepth 2 -type f -mtime +7 -print || status=$?
   else
+    capture_as_maintenance_user "$output_file" find "$tmp_root" -mindepth 1 -maxdepth 2 -type f -mtime +7 -print || status=$?
+    ((status == 0)) || { rm -f "$output_file"; return "$status"; }
     run_as_maintenance_user "Deleting temporary files older than 7 days in $tmp_root" find "$tmp_root" -mindepth 1 -maxdepth 2 -type f -mtime +7 -print -delete || status=$?
   fi
 
@@ -417,6 +432,8 @@ cleanup_downloads_run() {
     run_as_maintenance_user "Finding files older than ${cleanup_downloads_days}d in $downloads_dir" find "$downloads_dir" -type f -mtime +"$cleanup_downloads_days" -print
     capture_as_maintenance_user "$output_file" find "$downloads_dir" -type f -mtime +"$cleanup_downloads_days" -print || status=$?
   else
+    capture_as_maintenance_user "$output_file" find "$downloads_dir" -type f -mtime +"$cleanup_downloads_days" -print || status=$?
+    ((status == 0)) || { rm -f "$output_file"; return "$status"; }
     run_as_maintenance_user "Removing files older than ${cleanup_downloads_days}d in $downloads_dir" find "$downloads_dir" -type f -mtime +"$cleanup_downloads_days" -print -delete || status=$?
   fi
 
@@ -485,6 +502,7 @@ run_brew_updates() {
     log_warn "Skipping Homebrew cleanup and autoremove because an upgrade failed."
   fi
   if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor; then
+    if [[ "$RUN_COMMAND_FAILURE_KIND" == logging ]]; then return 1; fi
     HEALTH_WARNINGS=$((HEALTH_WARNINGS + 1))
     log_warn "brew doctor reported potential issues; review the log."
   fi
@@ -511,10 +529,10 @@ run_os_updates() {
     return 0
   fi
 
-  if [[ $EUID -eq 0 ]]; then
-    run_cmd "Running softwareupdate ${args[*]}" softwareupdate "${args[@]}"
-  else
+  if $os_update_apply && [[ $EUID -ne 0 ]]; then
     run_cmd "Running softwareupdate ${args[*]} via sudo" sudo softwareupdate "${args[@]}"
+  else
+    run_cmd "Running softwareupdate ${args[*]}" softwareupdate "${args[@]}"
   fi
 }
 
@@ -620,16 +638,28 @@ run_diagnostics() {
   if check_binary tmutil; then run_cmd "Time Machine status" tmutil status || status=$?; fi
   if check_binary brew; then
     if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor; then
+      if [[ "$RUN_COMMAND_FAILURE_KIND" == logging ]]; then return 1; fi
       HEALTH_WARNINGS=$((HEALTH_WARNINGS + 1))
       log_warn "brew doctor reported potential issues; review the log."
     fi
+  fi
+  if $diagnostics_shutdown_cause; then
+    run_cmd "Recent shutdown causes" /usr/bin/log show --predicate 'eventMessage CONTAINS "Previous shutdown cause"' --last 1d --info --debug || status=$?
   fi
   return "$status"
 }
 
 apply_standard_plan_if_needed() {
-  if ! $TASK_SELECTED; then
+  if [[ -z "$PRESET" ]] && ! $TASK_SELECTED; then PRESET=quick; fi
+
+  if [[ -n "$PRESET" ]]; then
+    cleanup=true
     brew_update=true
+    mas_update=true
+    os_update_check=true
+    diagnostics=true
+    diagnostics_shutdown_cause=false
+    if [[ "$PRESET" == comprehensive ]]; then diagnostics_shutdown_cause=true; fi
   fi
 }
 
@@ -708,6 +738,12 @@ print_final_summary() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --quick)
+      PRESET=quick
+      ;;
+    --comprehensive)
+      PRESET=comprehensive
+      ;;
     --cleanup)
       cleanup=true
       mark_task
@@ -811,7 +847,9 @@ if ! mkdir -p "$LOGDIR" || ! chmod 700 "$LOGDIR"; then
   log_error "Cannot create private log directory: $LOGDIR"
   exit 1
 fi
-LOGFILE=$(mktemp "$LOGDIR/maintain-$(date '+%Y%m%dT%H%M%S')-XXXXXX.log")
+LOGFILE=$(mktemp "$LOGDIR/maintain-$(date '+%Y%m%dT%H%M%S')-XXXXXX")
+mv "$LOGFILE" "$LOGFILE.log"
+LOGFILE="$LOGFILE.log"
 exec 9>>"$LOGFILE"
 RUN_TMP=$(mktemp -d)
 
@@ -834,7 +872,7 @@ finish() {
   CURRENT_PHASE=summary
   print_final_summary || { if ((result == 0)); then result=1; fi; }
   log_info "run_exit_status=$result duration_seconds=$((SECONDS - RUN_START)) log=$LOGFILE"
-  rm -rf "$RUN_TMP"
+  /bin/rm -rf "$RUN_TMP"
   exit "$result"
 }
 trap finish EXIT
