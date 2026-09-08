@@ -3,13 +3,13 @@
 `macos_maintenance.sh` is the canonical runner. The script under
 `snippets/zsh/` forwards to it. The system-maintenance plugin is a separate stub.
 
-Run as your normal user, without `sudo`. Version 3.1 defaults to **interactive Homebrew maintenance**, including greedy
-cask upgrades and unused-dependency removal. Use `--dry-run` for a preview. It refuses root execution; explicitly
-requested macOS updates invoke sudo for the system command.
+Run as your normal user. Version 3.2 defaults to **quick maintenance**: conservative cleanup, Homebrew maintenance, App Store updates, a macOS update check, and diagnostics. Use `--dry-run` for a preview. It refuses root execution; only explicitly requested macOS update installation invokes sudo.
 
 ```sh
-./zsh/macos_maintenance.sh                 # Run interactive Homebrew maintenance
-./zsh/macos_maintenance.sh -y              # Approve Homebrew upgrade confirmations
+./zsh/macos_maintenance.sh                 # Run quick maintenance
+./zsh/macos_maintenance.sh --quick         # Select quick maintenance explicitly
+./zsh/macos_maintenance.sh --comprehensive # Add recent shutdown-cause diagnostics
+./zsh/macos_maintenance.sh -y              # Quick maintenance; approve Homebrew prompts
 ./zsh/macos_maintenance.sh -y --verbose    # Also print command details
 ./zsh/macos_maintenance.sh --brew-autoremove -y
 ./zsh/macos_maintenance.sh --brew-greedy -y
@@ -51,14 +51,13 @@ health summary. Preview phases are PLANNED, never counted as completed.
 `--dry-run` takes precedence over `-y` regardless of argument order. The log directory must be writable.
 
 `LOG_LEVEL` controls console filtering (`error`, `warn`, `info`, `debug`).
-`LOG_RETENTION_DAYS` defaults to 30. `--cleanup -y` prunes only matching old
+`LOG_RETENTION_DAYS` defaults to 30. Cleanup prunes only matching old
 `maintain-*.log` files from the maintenance log directory, preserving the current
 log and other applications' logs. Preview runs still create their own log.
 
 ## Other tasks
 
-Cleanup, App Store updates, macOS updates, diagnostics, Downloads cleanup, and
-Restic backup are explicit options; see `--help`. Cache cleanup removes user cache
+Quick maintenance includes cleanup, Homebrew, App Store updates, an update check, and diagnostics. Explicit task flags without a preset select only those tasks; with a preset they are additive, and the last preset wins. Downloads cleanup, Restic backup, and OS update installation remain explicit. Cache cleanup removes user cache
 entries except the protected browser/session entries, so select it deliberately.
 Temporary cleanup requires a dedicated user-owned TMPDIR rather than shared /tmp.
 The runner does not broadly delete system logs or `/private/var/folders` and does
@@ -92,7 +91,7 @@ Remove stale aliases. To also replace an old `/usr/local/bin/maintain` copy:
 sudo install -m 755 /absolute/path/to/Personal-Gists/zsh/macos_maintenance.sh /usr/local/bin/maintain
 ```
 
-Run `maintain --help` in a new shell and verify version 3.1.0. Run maintenance
+Run `maintain --help` in a new shell and verify version 3.2.0. Run maintenance
 without sudo. Installing a copy requires repeating the install after future edits.
 
 ## Validation and sources
