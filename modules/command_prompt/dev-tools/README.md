@@ -22,8 +22,8 @@ dev-tools.cmd --help
 ## Examples
 See the `examples/` directory for complete usage examples.
 
-## Tested Versions
-- Windows Command Prompt
+## Platform requirement
+- Windows Command Prompt; not verified in the current macOS validation environment
 
 ## Notes
 
@@ -33,7 +33,7 @@ This module is currently a stub (placeholder) with example functions. It is plan
 
 ### Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [`topic_map.md`](../../../topic_map.md)):
+This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
 
 - `open_vsc_with_wsl.bat` - Opens VSCode with WSL remote connection - development environment tool
 

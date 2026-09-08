@@ -17,7 +17,7 @@ This module currently exports placeholder example functions. The actual function
 
 ## Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [`topic_map.md`](../../../topic_map.md)):
+This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
 
 - `Install-ChocoSoftware.ps1` - Automated installation using Chocolatey package manager
 - `Maintain-Choco.ps1` - Maintenance and updates for Chocolatey package manager
@@ -38,8 +38,8 @@ Invoke-PackageManagementExample -ExampleParam "value"
 ## Examples
 See the `examples/` directory for complete usage examples.
 
-## Tested Versions
-- PowerShell: 5.1/7.x
+## Platform requirement
+- PowerShell 5.1 or newer; not verified in the current macOS validation environment
 
 ## Notes
 

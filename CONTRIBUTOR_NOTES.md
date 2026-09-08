@@ -4,12 +4,16 @@ This document contains development notes, implementation plans, and guidelines f
 
 ## Module Status and Implementation Plans
 
+### Branch reconciliation record
+
+The useful behavior from `origin/codex/implement-cli-modes-for-macos_maintenance.sh` (`c007542`) was ported into the current maintenance runner: quick/comprehensive presets, recent shutdown-cause diagnostics via `/usr/bin/log`, and non-sudo update listing. The older runner was not merged wholesale, so the current branch retains streaming logs, backup safeguards, and structured failure summaries. Remote-branch deletion and merging into `main` are intentionally separate delivery steps.
+
 ### Current Status
 
 **Note:** Most modules are currently **stubs** (placeholders) with example functions. They are planned for future implementation. The original scripts that will be converted into these modules are located in `powershell/`, `python/`, `zsh/`, and `command_prompt/` directories, with preserved copies in `snippets/`.
 
-- ✅ **Implemented**: `api-integration` (PowerShell) - Spotify playlist management
-- 🔨 **Stubs**: All other modules are placeholders planned for implementation
+- ✅ **Implemented**: `api-integration` (PowerShell), `codex-project-profiles` (Zsh), and the canonical `zsh/macos_maintenance.sh` runner
+- 🔨 **Stubs**: Other modules are placeholders planned for implementation
 
 ### Implementation Tracking
 
@@ -776,4 +780,3 @@ This style guide ensures consistency across all PowerShell scripts in the reposi
 ## Future Ideas and Problems to Solve
 
 *Add future development ideas, problems to solve, and implementation priorities here as they arise.*
-
