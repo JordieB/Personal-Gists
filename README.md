@@ -19,6 +19,8 @@ A curated collection of reusable modules and utilities for PowerShell, Python, Z
 
 ## Available Modules
 
+Status: `api-integration`, the Codex project-profile plugin, and the canonical macOS maintenance runner are implemented. The remaining language modules are placeholders with installation and public-command smoke coverage only.
+
 ### API Integration
 - **PowerShell**: [api-integration](modules/powershell/api-integration/) - Tools for integrating with web APIs and third-party services
   - Set-SpotifyPlaylistPrivacy: Manage Spotify playlist privacy settings
@@ -31,6 +33,7 @@ A curated collection of reusable modules and utilities for PowerShell, Python, Z
 - **PowerShell**: [dev-tools](modules/powershell/dev-tools/) - Development environment utilities
 - **Python**: [dev-tools](modules/python/dev-tools/) - General development utilities and project helpers
 - **Command Prompt**: [dev-tools](modules/command_prompt/dev-tools/) - VSCode and development shortcuts
+- **Zsh**: [codex-project-profiles](modules/zsh/dev-tools/codex-project-profiles/) - Automatic repository-specific Codex profile selection
 
 ### Document Tools
 - **Python**: [document-tools](modules/python/document-tools/) - Document conversion and processing utilities
@@ -51,7 +54,7 @@ A curated collection of reusable modules and utilities for PowerShell, Python, Z
 - **PowerShell**: [system-admin](modules/powershell/system-admin/) - System administration tasks and configuration management
 
 ### System Maintenance
-- **Zsh**: [system-maintenance](modules/zsh/system-maintenance/) - Automated system maintenance routines
+- **Zsh**: [system-maintenance](modules/zsh/system-maintenance/) - Placeholder plugin; the canonical [macOS maintenance runner](zsh/README.md) is implemented
 
 ### Miscellaneous Tools
 - **PowerShell**: [misc-tools](modules/powershell/misc-tools/) - Utilities that don't fit into other categories
@@ -72,3 +75,10 @@ A curated collection of reusable modules and utilities for PowerShell, Python, Z
 ## License
 
 This project is licensed under the terms specified in [LICENSE](LICENSE).
+
+## macOS maintenance runner
+
+See [usage, logging, installation, and tests](zsh/README.md). The canonical
+`zsh/macos_maintenance.sh` runs the quick preset by default: cleanup, Homebrew, App Store updates, a macOS update check, and diagnostics. Use `--dry-run` to preview or `-y` to approve Homebrew prompts. Run as your normal user; update installation requests sudo only when explicitly selected.
+
+See [local testing](TESTING.md) for prerequisites, platform entry points, and mock boundaries.

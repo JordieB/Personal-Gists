@@ -17,7 +17,7 @@ This module currently exports placeholder example functions. The actual function
 
 ## Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [`topic_map.md`](../../../topic_map.md)):
+This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
 
 - `Ensure-PoetryAvailability.ps1` - Ensures Poetry is installed and available - Python package management
 - `Create-PythonVirtualEnv.ps1` - Creates and manages Python virtual environments using pyenv
@@ -40,8 +40,8 @@ Invoke-PythonToolsExample -ExampleParam "value"
 ## Examples
 See the `examples/` directory for complete usage examples.
 
-## Tested Versions
-- PowerShell: 5.1/7.x
+## Platform requirement
+- PowerShell 5.1 or newer; not verified in the current macOS validation environment
 
 ## Notes
 

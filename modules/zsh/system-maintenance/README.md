@@ -19,8 +19,8 @@ system_maintenance_example
 ## Examples
 See the `examples/` directory for complete usage examples.
 
-## Tested Versions
-- Shell: zsh 5.x
+## Platform requirement
+- Zsh 5.x; verified locally with Zsh 5.9
 
 ## Notes
 
@@ -30,7 +30,7 @@ This module is currently a stub (placeholder) with example functions. It is plan
 
 ### Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [`topic_map.md`](../../../topic_map.md)):
+This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
 
 - `macos_maintenance.sh` - Comprehensive automated maintenance script for macOS systems
 

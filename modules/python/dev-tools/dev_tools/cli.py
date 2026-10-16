@@ -2,6 +2,11 @@ import typer
 
 app = typer.Typer(add_completion=False)
 
+
+@app.callback()
+def main():
+    """Development tools command group."""
+
 @app.command()
 def example(option: bool = False):
     """

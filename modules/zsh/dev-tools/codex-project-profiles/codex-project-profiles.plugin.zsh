@@ -10,10 +10,23 @@ _codex_project_profile_is_management_command() {
   emulate -L zsh
 
   local arg
+  local skip_value=false
   for arg in "$@"; do
+    if $skip_value; then
+      skip_value=false
+      continue
+    fi
     case "$arg" in
+      -c|--config|--enable|--disable|-i|--image|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd)
+        skip_value=true
+        ;;
+      --*=*|-*)
+        ;;
       login|logout|plugin|mcp-server|app-server|remote-control|app|cloud|exec-server|features|update|doctor|completion|apply|help)
         return 0
+        ;;
+      *)
+        return 1
         ;;
     esac
   done

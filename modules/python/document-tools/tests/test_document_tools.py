@@ -4,14 +4,11 @@ from document_tools.cli import app
 
 runner = CliRunner()
 
-def test_example_command():
-    """Test the example command."""
-    result = runner.invoke(app, ["example"])
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [(["example"], "document tools"), (["example", "--option"], "option")],
+)
+def test_example_command(arguments, expected):
+    result = runner.invoke(app, arguments)
     assert result.exit_code == 0
-    assert "document tools" in result.stdout
-
-def test_example_command_with_option():
-    """Test the example command with option."""
-    result = runner.invoke(app, ["example", "--option"])
-    assert result.exit_code == 0
-    assert "option" in result.stdout
+    assert expected in result.stdout
