@@ -5,7 +5,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_VERSION="3.2.0"
+readonly SCRIPT_VERSION="3.2.1"
 readonly SCRIPT_NAME="macos_maintenance.sh"
 
 LOG_LEVEL=${LOG_LEVEL:-info}
@@ -38,6 +38,7 @@ BACKUP_MIN_FREE_GB=${BACKUP_MIN_FREE_GB:-10}
 
 TASK_TOTAL=0
 TASK_OK=0
+TASK_WARN=0
 TASK_PLANNED=0
 HEALTH_WARNINGS=0
 TASK_FAIL=0
@@ -46,6 +47,9 @@ PHASE_INDEX=0
 ERROR_SUMMARY=()
 SELECTED_PHASES=()
 RUN_COMMAND_FAILURE_KIND=""
+COMMAND_FAILURE_MARKER=""
+BREW_DOCTOR_CHECKED=false
+ALL_PHASES_FINISHED=false
 
 CLEANUP_AREAS=()
 CLEANUP_ITEMS=0
@@ -225,7 +229,7 @@ maintenance_home() { user_home "$(invoking_user)"; }
 run_cmd() {
   local description="$1"
   shift
-  local cmd="${1:-}" status=0 started=$SECONDS
+  local cmd="${1:-}" status=0 started=$SECONDS output_capture="" capture_status=0
   local failure_level=${COMMAND_FAILURE_LEVEL:-error}
   RUN_COMMAND_FAILURE_KIND=""
 
@@ -251,10 +255,21 @@ run_cmd() {
 
   log_info "$description"
   log_debug "command=$(command_display "$@")"
+  if [[ -n "$COMMAND_FAILURE_MARKER" ]]; then
+    output_capture="$RUN_TMP/command-output-$PHASE_INDEX-$TASK_TOTAL"
+    : >"$output_capture"
+  fi
   # Keep stdin attached for prompts; stream bytes (including prompts without a
   # newline) immediately. Capture both pipeline statuses before another command.
   local pipeline_status=()
-  if "$@" 2>&1 | tee -a "$LOGFILE"; then
+  if [[ -n "$output_capture" ]]; then
+    if "$@" 2>&1 | tee -a "$LOGFILE" "$output_capture"; then
+      pipeline_status=("${PIPESTATUS[@]}")
+    else
+      pipeline_status=("${PIPESTATUS[@]}")
+    fi
+    capture_status=${pipeline_status[1]:-0}
+  elif "$@" 2>&1 | tee -a "$LOGFILE"; then
     pipeline_status=("${PIPESTATUS[@]}")
   else
     pipeline_status=("${PIPESTATUS[@]}")
@@ -266,6 +281,17 @@ run_cmd() {
     RUN_COMMAND_FAILURE_KIND="logging"
     return 1
   fi
+  if ((capture_status != 0)); then
+    log_error "Failed to capture command output: $cmd"
+    record_error "$description: output capture failed"
+    RUN_COMMAND_FAILURE_KIND="logging"
+    return 1
+  fi
+  if ((status == 0)) && [[ -n "$output_capture" ]] && grep -Fq "$COMMAND_FAILURE_MARKER" "$output_capture"; then
+    status=1
+    log_warn "command=$cmd emitted an error marker despite exit_status=0"
+  fi
+  COMMAND_FAILURE_MARKER=""
   if ((status == 0)); then
     log_info "command=$cmd state=SUCCESS exit_status=0 duration_seconds=$((SECONDS - started))"
     return 0
@@ -311,10 +337,10 @@ add_cleanup_area_summary() {
 
 should_skip_cache_path() {
   local base
-  base=$(basename "$1")
+  base=$(basename "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')
 
   case "$base" in
-    *Safari* | *Firefox* | *Mozilla* | *Chrome* | *Chromium* | *Brave* | *Edge* | *Arc* | *Obsidian* | *GitHub* | restic)
+    *safari* | *firefox* | *mozilla* | *chrome* | *chromium* | *brave* | *edge* | *arc* | *obsidian* | *github* | restic | com.apple.* | *cloudkit* | *geoservices* | *codex* | com.openai.* | ms-playwright*)
       return 0
       ;;
     *)
@@ -328,16 +354,21 @@ cleanup_user_caches() {
   home=$(maintenance_home)
   cache_root="$home/Library/Caches"
 
+  if [[ -L "$cache_root" ]]; then
+    log_info "Skipping symlinked cache root: $cache_root"
+    return 0
+  fi
+
   [[ -d "$cache_root" ]] || {
     log_info "Cache root $cache_root not found; skipping."
     return 0
   }
 
   before=$(bytes_for_path "$cache_root")
-  log_info "Conservative cache cleanup: preserving browser/session/auth-sensitive caches."
+  log_info "Cache cleanup: preserving listed browser, app, Apple, and backup cache exclusions and symlinks."
 
   while IFS= read -r -d '' item; do
-    if should_skip_cache_path "$item"; then
+    if [[ -L "$item" ]] || should_skip_cache_path "$item"; then
       log_debug "Skipping protected cache: $item"
       continue
     fi
@@ -473,9 +504,20 @@ run_cleanup() {
   return "$status"
 }
 
+run_brew_doctor() {
+  if $BREW_DOCTOR_CHECKED; then return 0; fi
+  BREW_DOCTOR_CHECKED=true
+  if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor; then
+    if [[ "$RUN_COMMAND_FAILURE_KIND" == logging ]]; then return 1; fi
+    HEALTH_WARNINGS=$((HEALTH_WARNINGS + 1))
+    log_warn "brew doctor reported potential issues; review the log."
+  fi
+  return 0
+}
+
 run_brew_updates() {
-  local status=0 cask_args=(--cask) upgrade_args=(--ask)
-  if $YES; then upgrade_args=(--no-ask); fi
+  local status=0 command_status=0 cask_args=(--cask) formula_args=(--formula)
+  if $YES; then formula_args+=(--no-ask); fi
   if ! check_binary brew; then
     log_warn "Homebrew not installed; skipping brew maintenance."
     TASK_SKIP=$((TASK_SKIP + 1))
@@ -487,26 +529,47 @@ run_brew_updates() {
   run_cmd "Updating Homebrew metadata" brew update || return $?
   run_cmd "Listing outdated formulae" brew outdated --formula || return $?
   run_cmd "Listing outdated casks" brew outdated "${cask_args[@]}" || return $?
-  run_cmd "Upgrading Homebrew formulae" brew upgrade --formula "${upgrade_args[@]}" || status=$?
-  run_cmd "Upgrading Homebrew casks" brew upgrade "${cask_args[@]}" "${upgrade_args[@]}" || status=$?
-  if ((status == 0)); then
-    if $brew_autoremove; then
-      run_cmd "Removing unused Homebrew dependencies" brew autoremove || status=$?
-    else
-      run_cmd "Previewing unused Homebrew dependencies" brew autoremove --dry-run || status=$?
-    fi
-    if ((status == 0)); then
-      run_cmd "Cleaning old Homebrew artifacts" brew cleanup || status=$?
+  COMMAND_FAILURE_MARKER='Error:'
+  run_cmd "Upgrading Homebrew formulae" brew upgrade "${formula_args[@]}" || status=$?
+  COMMAND_FAILURE_MARKER=""
+  if $YES; then cask_args+=(--no-ask); fi
+  COMMAND_FAILURE_MARKER='Error:'
+  run_cmd "Upgrading Homebrew casks" brew upgrade "${cask_args[@]}" || status=$?
+  COMMAND_FAILURE_MARKER=""
+  # Maintenance cleanup is independent of upgrade success. A broken/stale cask
+  # registration must not prevent removal of unused dependencies or old cache.
+  if $brew_autoremove; then
+    if run_cmd "Removing unused Homebrew dependencies" brew autoremove; then :; else
+      command_status=$?
+      ((status != 0)) || status=$command_status
     fi
   else
-    log_warn "Skipping Homebrew cleanup and autoremove because an upgrade failed."
+    if run_cmd "Previewing unused Homebrew dependencies" brew autoremove --dry-run; then :; else
+      command_status=$?
+      ((status != 0)) || status=$command_status
+    fi
   fi
-  if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor; then
-    if [[ "$RUN_COMMAND_FAILURE_KIND" == logging ]]; then return 1; fi
-    HEALTH_WARNINGS=$((HEALTH_WARNINGS + 1))
-    log_warn "brew doctor reported potential issues; review the log."
+  if run_cmd "Cleaning old Homebrew artifacts" brew cleanup; then :; else
+    command_status=$?
+    ((status != 0)) || status=$command_status
   fi
+  run_brew_doctor || return $?
   return "$status"
+}
+
+tmutil_latestbackup_checked() {
+  local output status
+  if output=$(tmutil latestbackup -t 2>&1); then
+    printf '%s\n' "$output"
+    # tmutil has emitted destination errors with exit status zero. Accept only
+    # its documented timestamp shape; empty, error, or unexpected output is
+    # unverified information and must not be logged as command success.
+    [[ "$output" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$ ]]
+  else
+    status=$?
+    printf '%s\n' "$output"
+    return "$status"
+  fi
 }
 
 run_mas_updates() {
@@ -636,13 +699,14 @@ run_diagnostics() {
   local status=0
   run_cmd "Disk usage snapshot" df -h / || status=$?
   if check_binary tmutil; then run_cmd "Time Machine status" tmutil status || status=$?; fi
-  if check_binary brew; then
-    if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Checking Homebrew health" brew doctor; then
+  if check_binary tmutil; then
+    if ! COMMAND_FAILURE_LEVEL=warn run_cmd "Latest successful Time Machine backup" tmutil_latestbackup_checked; then
       if [[ "$RUN_COMMAND_FAILURE_KIND" == logging ]]; then return 1; fi
       HEALTH_WARNINGS=$((HEALTH_WARNINGS + 1))
-      log_warn "brew doctor reported potential issues; review the log."
+      log_warn "Latest Time Machine backup information unavailable; permissions or a disconnected destination may prevent retrieval."
     fi
   fi
+  if check_binary brew; then run_brew_doctor || return $?; fi
   if $diagnostics_shutdown_cause; then
     run_cmd "Recent shutdown causes" /usr/bin/log show --predicate 'eventMessage CONTAINS "Previous shutdown cause"' --last 1d --info --debug || status=$?
   fi
@@ -677,7 +741,7 @@ build_selected_phases() {
 run_phase() {
   local phase="$1"
   shift
-  local start end duration status=0 bar skipped_before=$TASK_SKIP
+  local start end duration status=0 bar skipped_before=$TASK_SKIP warnings_before=$HEALTH_WARNINGS
   CURRENT_PHASE="$phase"
 
   PHASE_INDEX=$((PHASE_INDEX + 1))
@@ -697,6 +761,9 @@ run_phase() {
   elif ((status == 0)) && $DRY_RUN; then
     TASK_PLANNED=$((TASK_PLANNED + 1))
     log_info "phase=$phase state=PLANNED actions_executed=0"
+  elif ((status == 0 && HEALTH_WARNINGS > warnings_before)); then
+    TASK_WARN=$((TASK_WARN + 1))
+    log_warn "phase=$phase state=WARNING duration_seconds=$duration health_warnings=$((HEALTH_WARNINGS - warnings_before))"
   elif ((status == 0)); then
     TASK_OK=$((TASK_OK + 1))
     log_info "phase=$phase state=SUCCESS duration_seconds=$duration"
@@ -719,10 +786,14 @@ print_final_summary() {
     done
   fi
 
-  log_info "summary requested=$TASK_TOTAL completed_successfully=$TASK_OK planned=$TASK_PLANNED health_warnings=$HEALTH_WARNINGS incomplete=$incomplete failed=$TASK_FAIL skipped=$TASK_SKIP errors={$errors_joined}"
+  log_info "summary requested=$TASK_TOTAL completed_successfully=$TASK_OK completed_with_warnings=$TASK_WARN planned=$TASK_PLANNED health_warnings=$HEALTH_WARNINGS incomplete=$incomplete failed=$TASK_FAIL skipped=$TASK_SKIP errors={$errors_joined}"
 
   if ((TASK_FAIL > 0 || ${RUN_RESULT:-0} != 0)); then
-    log_error "Maintenance ended with incomplete phases. Review red flags above."
+    if $ALL_PHASES_FINISHED; then
+      log_error "Maintenance completed with failures. Review red flags above."
+    else
+      log_error "Maintenance ended with incomplete phases. Review red flags above."
+    fi
     return 1
   fi
 
@@ -857,12 +928,12 @@ finish() {
   local result=$? pending
   RUN_RESULT=$result
   trap - EXIT
-  if ((result != 0)); then
+  if ((result != 0)) && ! $ALL_PHASES_FINISHED; then
     log_error "Run stopped during phase=$CURRENT_PHASE exit_status=$result"
     for pending in "$RUN_TMP"/command.*; do
       if [[ -f "$pending" ]]; then log_command_output warn interrupted-command "$pending"; fi
     done
-    if ((TASK_TOTAL > TASK_OK + TASK_PLANNED + TASK_FAIL + TASK_SKIP)); then
+    if ((TASK_TOTAL > TASK_OK + TASK_WARN + TASK_PLANNED + TASK_FAIL + TASK_SKIP)); then
       TASK_FAIL=$((TASK_FAIL + 1))
       record_error "$CURRENT_PHASE: interrupted exit_status=$result"
     fi
@@ -897,5 +968,6 @@ if $mas_update; then run_phase "Mac App Store Maintenance" run_mas_updates; fi
 if $os_update_check; then run_phase "macOS Update Check" run_os_updates; fi
 if $diagnostics; then run_phase "Diagnostics" run_diagnostics; fi
 
+ALL_PHASES_FINISHED=true
 if ((TASK_FAIL > 0)); then exit 1; fi
 exit 0

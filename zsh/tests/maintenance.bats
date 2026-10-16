@@ -19,12 +19,34 @@ printf 'stdout for %s\n' "$*"
 printf 'stderr for %s' "$*" >&2
 if [[ "$*" == "${FAIL_COMMAND:-}" ]]; then exit 42; fi
 if [[ "$1" == doctor && ${DOCTOR_WARN:-} == true ]]; then exit 1; fi
+if [[ "$1" == upgrade && ${UPGRADE_ERROR_ZERO:-} == true ]]; then
+  printf 'Error: simulated package upgrade failure\n'
+  exit 0
+fi
 if [[ "$1" == update && ${INTERRUPT:-} == true ]]; then kill -TERM "$PPID"; fi
 MOCK
   cat > "$BATS_TEST_TMPDIR/bin/softwareupdate" <<'MOCK'
 #!/bin/bash
 printf 'softwareupdate %s\n' "$*" >> "$CALLS"
 if [[ ${FAIL_SOFTWAREUPDATE:-} == true ]]; then exit 9; fi
+MOCK
+  cat > "$BATS_TEST_TMPDIR/bin/tmutil" <<'MOCK'
+#!/bin/bash
+printf 'tmutil %s\n' "$*" >> "$CALLS"
+if [[ "$1" == latestbackup ]]; then
+  if [[ ${LATEST_BACKUP_UNAVAILABLE:-} == true ]]; then exit 1; fi
+  if [[ ${LATEST_BACKUP_MOUNT_FAILURE:-} == true ]]; then
+    printf 'Failed to mount backup destination, error: destination unavailable.\n'
+    exit 0
+  fi
+  if [[ ${LATEST_BACKUP_UNEXPECTED:-} == true ]]; then
+    printf 'No reliable backup result was produced.\n'
+    exit 0
+  fi
+  printf '2026-09-27-120000\n'
+else
+  printf 'Running = 0;\n'
+fi
 MOCK
   chmod +x "$BATS_TEST_TMPDIR/bin/"*
 }
@@ -59,13 +81,32 @@ MOCK
   [[ "$output" != *'completed successfully.'* ]]
 }
 
-@test "failed upgrade skips cleanup but still runs doctor" {
+@test "failed upgrade still runs independent autoremove and cleanup and doctor" {
   export FAIL_COMMAND='upgrade --formula --no-ask'
   run /bin/bash "$SCRIPT" --brew -y
   [ "$status" -eq 1 ]
-  ! /usr/bin/grep -q '^cleanup$' "$CALLS"
-  ! /usr/bin/grep -q '^autoremove' "$CALLS"
+  /usr/bin/grep -q '^cleanup$' "$CALLS"
+  /usr/bin/grep -q '^autoremove$' "$CALLS"
   /usr/bin/grep -q '^doctor$' "$CALLS"
+  [[ "$output" == *'failed=1'* ]]
+}
+
+@test "failed autoremove still runs Homebrew cleanup" {
+  export FAIL_COMMAND='autoremove'
+  run /bin/bash "$SCRIPT" --brew -y
+  [ "$status" -eq 1 ]
+  /usr/bin/grep -q '^cleanup$' "$CALLS"
+  [[ "$output" == *'failed=1'* ]]
+}
+
+@test "Homebrew upgrade Error output counts as failure despite zero exit" {
+  export UPGRADE_ERROR_ZERO=true
+  run /bin/bash "$SCRIPT" --brew -y
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'emitted an error marker despite exit_status=0'* ]]
+  /usr/bin/grep -q '^autoremove$' "$CALLS"
+  /usr/bin/grep -q '^cleanup$' "$CALLS"
+  [[ "$output" == *'failed=1'* ]]
 }
 
 @test "failed Homebrew cleanup fails the phase while retaining doctor output" {
@@ -230,18 +271,19 @@ MOCK
   [[ "$output" == *'downloads:'*'items=1'* ]]
 }
 
-@test "default performs maintenance and preserves upgrade confirmation" {
+@test "default performs maintenance using Homebrew default confirmation" {
   run /bin/bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  /usr/bin/grep -qx 'upgrade --formula --ask' "$CALLS"
-  /usr/bin/grep -qx 'upgrade --cask --greedy --ask' "$CALLS"
+  /usr/bin/grep -qx 'upgrade --formula' "$CALLS"
+  /usr/bin/grep -qx 'upgrade --cask --greedy' "$CALLS"
   /usr/bin/grep -qx 'autoremove' "$CALLS"
+  ! /usr/bin/grep -q -- '--ask' "$CALLS"
 }
 
 @test "exclusions narrow the default scope" {
   run /bin/bash "$SCRIPT" --no-brew-greedy --no-brew-autoremove
   [ "$status" -eq 0 ]
-  /usr/bin/grep -qx 'upgrade --cask --ask' "$CALLS"
+  /usr/bin/grep -qx 'upgrade --cask' "$CALLS"
   /usr/bin/grep -qx 'autoremove --dry-run' "$CALLS"
 }
 
@@ -341,4 +383,120 @@ MOCK
   [ "$status" -eq 1 ]
   [[ "$output" == *'exit_status=9'* ]]
   [[ "$output" == *'failed=1'* ]]
+}
+
+@test "doctor runs once across Homebrew and diagnostics and warnings count once" {
+  export DOCTOR_WARN=true
+  run /bin/bash "$SCRIPT" --brew --diagnostics
+  [ "$status" -eq 0 ]
+  [ "$(/usr/bin/grep -cx doctor "$CALLS")" -eq 1 ]
+  [[ "$output" == *'health_warnings=1'* ]]
+  [[ "$output" == *'phase=Homebrew Maintenance state=WARNING'* ]]
+  [[ "$output" == *'completed_with_warnings=1'* ]]
+  [[ "$output" == *'failed=0'* ]]
+}
+
+@test "doctor is previewed once across phases with no commands executed" {
+  run /bin/bash "$SCRIPT" --brew --diagnostics --dry-run
+  [ "$status" -eq 0 ]
+  [ ! -s "$CALLS" ]
+  [ "$(printf '%s\n' "$output" | /usr/bin/grep -c 'Checking Homebrew health')" -eq 1 ]
+}
+
+@test "diagnostics runs doctor after an early Homebrew failure and reports completion" {
+  export FAIL_COMMAND=update
+  run /bin/bash "$SCRIPT" --brew --diagnostics
+  [ "$status" -eq 1 ]
+  [ "$(/usr/bin/grep -cx doctor "$CALLS")" -eq 1 ]
+  [[ "$output" == *'phase=Diagnostics state=SUCCESS'* ]]
+  [[ "$output" == *'Maintenance completed with failures.'* ]]
+  [[ "$output" != *'Run stopped during'* ]]
+}
+
+@test "latest backup diagnostic is unprivileged and reports its timestamp" {
+  run /bin/bash "$SCRIPT" --diagnostics
+  [ "$status" -eq 0 ]
+  /usr/bin/grep -qx 'tmutil status' "$CALLS"
+  /usr/bin/grep -qx 'tmutil latestbackup -t' "$CALLS"
+  [[ "$output" == *'2026-09-27-120000'* ]]
+  [[ "$output" == *'health_warnings=0'* ]]
+}
+
+@test "unavailable latest backup is a warning without claiming backups do not exist" {
+  export LATEST_BACKUP_UNAVAILABLE=true
+  run /bin/bash "$SCRIPT" --diagnostics
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Latest Time Machine backup information unavailable'* ]]
+  [[ "$output" == *'health_warnings=1'* ]]
+  [[ "$output" == *'failed=0'* ]]
+  [[ "$output" != *'no backups'* ]]
+}
+
+@test "Time Machine mount failure with zero exit is not logged as success" {
+  export LATEST_BACKUP_MOUNT_FAILURE=true
+  run /bin/bash "$SCRIPT" --diagnostics
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Failed to mount backup destination'* ]]
+  [[ "$output" == *'Latest Time Machine backup information unavailable'* ]]
+  [[ "$output" == *'health_warnings=1'* ]]
+  [[ "$output" == *'phase=Diagnostics state=WARNING'* ]]
+  [[ "$output" == *'completed_with_warnings=1'* ]]
+  [[ "$output" != *'command=tmutil_latestbackup_checked state=SUCCESS'* ]]
+  [[ "$output" == *'command=tmutil_latestbackup_checked state=FAILED'* ]]
+}
+
+@test "unexpected Time Machine result is warning and not command success" {
+  export LATEST_BACKUP_UNEXPECTED=true
+  run /bin/bash "$SCRIPT" --diagnostics
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Latest Time Machine backup information unavailable'* ]]
+  [[ "$output" == *'phase=Diagnostics state=WARNING'* ]]
+  [[ "$output" != *'command=tmutil_latestbackup_checked state=SUCCESS'* ]]
+}
+
+@test "cache exclusions preserve mixed-case names while deleting ordinary files and directories" {
+  cache="$HOME/Library/Caches"
+  names=(SAFARI-session fIrEfOx mOzilla cHrome cHromium bRave eDge aRc oBsidian gIthub ReStIc COM.APPLE.akd xCLOUDKITx xGEOSERVICESx xCODEXx COM.OPENAI.app MS-PLAYWRIGHT-test)
+  for name in "${names[@]}"; do
+    mkdir -p "$cache/$name"
+    touch "$cache/$name/keep"
+  done
+  mkdir -p "$cache/disposable"
+  touch "$cache/plain-file"
+  run /bin/bash "$SCRIPT" --cleanup
+  [ "$status" -eq 0 ]
+  for name in "${names[@]}"; do [ -e "$cache/$name/keep" ]; done
+  [ ! -e "$cache/disposable" ]
+  [ ! -e "$cache/plain-file" ]
+  [[ "$output" == *'user_caches:'*'items=2'* ]]
+}
+
+@test "cleanup skips symlink entries and dangling links" {
+  cache="$HOME/Library/Caches"
+  mkdir -p "$cache" "$HOME/target"
+  touch "$HOME/target/keep"
+  ln -s "$HOME/target" "$cache/linked"
+  ln -s "$HOME/missing" "$cache/dangling"
+  run /bin/bash "$SCRIPT" --cleanup
+  [ "$status" -eq 0 ]
+  [ -L "$cache/linked" ]
+  [ -L "$cache/dangling" ]
+  [ -e "$HOME/target/keep" ]
+  [[ "$output" == *'user_caches:'*'items=0'* ]]
+}
+
+@test "cleanup skips symlinked cache roots including dangling roots" {
+  mkdir -p "$HOME/Library" "$HOME/target"
+  touch "$HOME/target/keep"
+  ln -s "$HOME/target" "$HOME/Library/Caches"
+  run /bin/bash "$SCRIPT" --cleanup
+  [ "$status" -eq 0 ]
+  [ -e "$HOME/target/keep" ]
+  [[ "$output" == *'Skipping symlinked cache root'* ]]
+  rm "$HOME/Library/Caches"
+  ln -s "$HOME/missing" "$HOME/Library/Caches"
+  run /bin/bash "$SCRIPT" --cleanup
+  [ "$status" -eq 0 ]
+  [ -L "$HOME/Library/Caches" ]
+  [[ "$output" == *'Skipping symlinked cache root'* ]]
 }
