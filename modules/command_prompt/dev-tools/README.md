@@ -33,7 +33,7 @@ This module is currently a stub (placeholder) with example functions. It is plan
 
 ### Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
+This module is intended to house functions converted from the following scripts:
 
 - `open_vsc_with_wsl.bat` - Opens VSCode with WSL remote connection - development environment tool
 

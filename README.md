@@ -69,6 +69,8 @@ Status: `api-integration`, the Codex project-profile plugin, and the canonical m
 │  ├─ zsh/<topic>/            # Zsh plugins (.plugin.zsh)
 │  └─ command_prompt/<topic>/ # Command Prompt utilities (.cmd)
 ├─ snippets/                   # Original scripts (preserved)
+├─ tests/                      # Suites by language and component; platform runners
+├─ TESTING.md                  # Local validation instructions
 └─ README.md                  # This file
 ```
 

@@ -17,7 +17,7 @@ This module currently exports placeholder example functions. The actual function
 
 ## Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
+This module is intended to house functions converted from the following scripts:
 
 - `Example-PSProfileWithSourcedFuncs.ps1` - PowerShell profile configuration for development environment
 - `profile.ps1` - PowerShell profile for development environment customization

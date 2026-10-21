@@ -97,9 +97,6 @@ excluded from the backup. A successful backup is followed by `restic check`, the
 retention/pruning. `check` checks repository structure; it is not a full data-read
 or test restore. Keep an independent recovery copy of your password.
 
-The root-level `maintenance.conf` is legacy configuration and is not loaded by
-this runner. Use documented command-line options and environment variables.
-
 ## Installing or updating maintain
 
 Use the repository's absolute path in your shell alias, for example:
@@ -123,7 +120,7 @@ Tests mock Homebrew and Time Machine and use temporary homes; they do not upgrad
 Run on macOS with Bash 3.2 or later and bats-core:
 
 ```sh
-bats zsh/tests/maintenance.bats
+bats tests/zsh/maintenance/maintenance.bats
 shellcheck zsh/macos_maintenance.sh snippets/zsh/macos_maintenance.sh
 bash -n zsh/macos_maintenance.sh
 ```

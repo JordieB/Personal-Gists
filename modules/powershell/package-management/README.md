@@ -17,7 +17,7 @@ This module currently exports placeholder example functions. The actual function
 
 ## Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
+This module is intended to house functions converted from the following scripts:
 
 - `Install-ChocoSoftware.ps1` - Automated installation using Chocolatey package manager
 - `Maintain-Choco.ps1` - Maintenance and updates for Chocolatey package manager

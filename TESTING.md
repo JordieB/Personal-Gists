@@ -1,13 +1,13 @@
 # Local testing
 
-Validation is intentionally local; this repository does not add GitHub workflows. Run commands from the repository root.
+Validation is intentionally local; this repository does not add GitHub workflows. Entry points resolve paths relative to the repository and can be called from any working directory. The commands below assume the repository root.
 
 ## macOS
 
 Prerequisites are Bash 3.2+, Zsh, Python 3.9+, `bats-core`, `shellcheck`, and `uv`. Run:
 
 ```sh
-./test-macos.sh
+./tests/run-macos.sh
 ```
 
 The entry point reports tool versions and exits nonzero when a required tool or suite is unavailable. It runs maintenance and profile Bats suites, shell syntax and ShellCheck, and installs each Python package into a clean environment before checking import-driven tests, help, `example`, and `example --option`.
@@ -17,10 +17,10 @@ The entry point reports tool versions and exits nonzero when a required tool or 
 Prerequisites are PowerShell 5.1+ and Pester 5. Run:
 
 ```powershell
-./test-windows.ps1
+./tests/run-windows.ps1
 ```
 
-Windows results are separate from macOS results. A missing PowerShell or Pester environment is unavailable, never a pass.
+The Windows entry point runs PowerShell and Command Prompt suites. Windows results are separate from macOS results. A missing PowerShell or Pester environment is unavailable, never a pass.
 
 ## Mock boundary
 

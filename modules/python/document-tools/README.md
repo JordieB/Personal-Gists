@@ -37,7 +37,7 @@ This module is currently a stub (placeholder) with example commands. It is plann
 
 ### Planned Implementation
 
-This module is intended to house CLI commands converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
+This module is intended to house CLI commands converted from the following scripts:
 
 - `pdf_to_md.py` - Converts PDF files to Markdown format - document processing
 

@@ -17,7 +17,7 @@ This module currently exports placeholder example functions. The actual function
 
 ## Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
+This module is intended to house functions converted from the following scripts:
 
 - `Backup-ReWASDConfigs.ps1` - Backs up system configuration files for ReWASD hardware controller software
 - `Remove-BluetoothDevice.ps1` - Manages Bluetooth devices at system level

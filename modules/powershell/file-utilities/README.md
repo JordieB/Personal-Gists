@@ -17,7 +17,7 @@ This module currently exports placeholder example functions. The actual function
 
 ## Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
+This module is intended to house functions converted from the following scripts:
 
 - `Display-DirectoryTree.ps1` - Displays directory structure in tree format - file system utility
 - `Create-IndexShortcuts.ps1` - Creates shortcuts for file navigation and organization

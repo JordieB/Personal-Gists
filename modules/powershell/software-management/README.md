@@ -17,7 +17,7 @@ This module currently exports placeholder example functions. The actual function
 
 ## Planned Implementation
 
-This module is intended to house functions converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
+This module is intended to house functions converted from the following scripts:
 
 - `Remove-Edge.ps1` - Removes Microsoft Edge browser and prevents reinstallation
 - `Full-Uninstall-Vortex-and-Valheim.ps1` - Complete removal of specific gaming software applications
