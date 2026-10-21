@@ -5,6 +5,8 @@
 ## Install
 ```bash
 pip install -e ./modules/python/document-tools
+# For local tests:
+pip install -e './modules/python/document-tools[test]'
 ```
 
 ## Usage
@@ -24,8 +26,8 @@ cli.app()
 ## Examples
 See the `examples/` directory for complete usage examples.
 
-## Tested Versions
-- Python: 3.9–3.12
+## Verified locally
+- Python 3.9.6 and 3.14.7; package metadata supports Python 3.9+
 
 ## Notes
 
@@ -35,7 +37,7 @@ This module is currently a stub (placeholder) with example commands. It is plann
 
 ### Planned Implementation
 
-This module is intended to house CLI commands converted from the following scripts (as categorized in [`topic_map.md`](../../../topic_map.md)):
+This module is intended to house CLI commands converted from the following scripts (as categorized in [Contributor Notes topic mapping](../../../CONTRIBUTOR_NOTES.md#topic-mapping)):
 
 - `pdf_to_md.py` - Converts PDF files to Markdown format - document processing
 

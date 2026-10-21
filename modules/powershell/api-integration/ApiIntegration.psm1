@@ -79,7 +79,7 @@ function Set-SpotifyPlaylistPrivacy {
         switch ($Level) {
             'Information' { Write-Information $Message -InformationAction Continue }
             'Warning' { Write-Warning $Message }
-            'Error' { Write-Error $Message }
+            'Error' { Write-Error $Message -ErrorAction Continue }
         }
     }
 
@@ -190,7 +190,6 @@ function Set-SpotifyPlaylistPrivacy {
                 } catch {
                     $errorMsg = "Error processing playlist '$($playlist.name)' (ID: $($playlist.id)): $($_.Exception.Message)"
                     Write-SpotifyLog $errorMsg -Level Error
-                    Write-Error $errorMsg
                 }
             }
 
@@ -217,13 +216,13 @@ function Set-SpotifyPlaylistPrivacy {
 
         # Test and setup Spotishell module
         if (-not (Test-SpotishellModule)) {
-            Write-Error "Cannot continue without Spotishell module."
+            Write-Error "Cannot continue without Spotishell module." -ErrorAction Continue
             return $false
         }
 
         # Validate Spotify application setup
         if (-not (Test-SpotifyApplication)) {
-            Write-Error "Cannot continue without proper Spotify application setup."
+            Write-Error "Cannot continue without proper Spotify application setup." -ErrorAction Continue
             return $false
         }
 
@@ -243,7 +242,7 @@ function Set-SpotifyPlaylistPrivacy {
         
     } catch {
         Write-SpotifyLog "Critical error in main execution: $($_.Exception.Message)" -Level Error
-        Write-Error "Critical error: $($_.Exception.Message)"
+        Write-Error "Critical error: $($_.Exception.Message)" -ErrorAction Continue
         return $false
     }
 }
